@@ -1,0 +1,17 @@
+.vs/
+.vscode/
+*.vcxproj.user
+
+build/
+target/
+CMakeUserPresets.json
+compile_commands.json
+
+apps/render/.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+third_party/zenoh/windows/zenohc/
+third_party/zenoh/windows/zenohcxx/

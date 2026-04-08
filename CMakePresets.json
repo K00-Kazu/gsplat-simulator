@@ -1,0 +1,38 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2022-base",
+      "hidden": true,
+      "generator": "Visual Studio 17 2022",
+      "architecture": {
+        "value": "x64",
+        "strategy": "set"
+      },
+      "binaryDir": "${sourceDir}/build/cmake/${presetName}",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install"
+      }
+    },
+    {
+      "name": "ui-debug",
+      "displayName": "UI Debug",
+      "inherits": "vs2022-base",
+      "cacheVariables": {
+        "GSPLAT_UI_ENABLE_ZENOH": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "ui-debug",
+      "configurePreset": "ui-debug",
+      "configuration": "Debug"
+    }
+  ]
+}

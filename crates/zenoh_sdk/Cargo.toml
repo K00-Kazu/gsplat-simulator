@@ -1,0 +1,10 @@
+[package]
+name = "gsplat_zenoh"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+zenoh = "=1.8.0"
