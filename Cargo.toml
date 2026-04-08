@@ -12,3 +12,4 @@ version = "0.1.0"
 [workspace.dependencies]
 tokio = { version = "1.51.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
 zenoh = { package = "gsplat_zenoh", path = "crates/zenoh_sdk" }
+serde_json = "1"

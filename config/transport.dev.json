@@ -1,0 +1,53 @@
+{
+  "environment": "dev",
+  "zenoh": {
+    "mode": "peer",
+    "connect": {
+      "endpoints": [
+        "tcp/127.0.0.1:7447"
+      ]
+    },
+    "listen": {
+      "endpoints": [
+        "tcp/127.0.0.1:7447"
+      ]
+    },
+    "scouting": {
+      "multicast": {
+        "enabled": false
+      }
+    },
+    "open": {
+      "return_conditions": {
+        "connect_scouted": true,
+        "declares": true
+      }
+    }
+  },
+  "topics": {
+    "prefix": "simulation",
+    "core": {
+      "gaze_vector": "simulation/core/gaze_vector",
+      "frame_metadata": "simulation/core/frame_metadata",
+      "frame_payload": "simulation/core/frame_payload"
+    },
+    "ui": {
+      "command": "simulation/ui/cmd/**",
+      "state": "simulation/ui/state/**",
+      "stats": "simulation/ui/stats/**",
+      "preview": "simulation/ui/preview/**"
+    },
+    "render": {
+      "request": "simulation/render/request/**",
+      "response": "simulation/render/response/**"
+    },
+    "transport": {
+      "command": "simulation/transport/cmd/**",
+      "telemetry": "simulation/transport/telemetry/**"
+    }
+  },
+  "timeouts": {
+    "startup_delay_ms": 1000,
+    "publish_interval_ms": 1000
+  }
+}
