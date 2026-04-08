@@ -1231,6 +1231,7 @@ name = "main"
 version = "0.1.0"
 dependencies = [
  "gsplat_zenoh",
+ "serde_json",
  "tokio",
 ]
 

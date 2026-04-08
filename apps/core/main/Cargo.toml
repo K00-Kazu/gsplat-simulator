@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 zenoh.workspace = true
 tokio.workspace = true
+serde_json.workspace = true
