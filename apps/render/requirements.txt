@@ -1,0 +1,13 @@
+viser
+imageio[ffmpeg]
+numpy<2.0.0
+tqdm
+torchmetrics[image]
+opencv-python
+tyro>=0.8.8
+Pillow
+pyyaml
+matplotlib
+plyfile
+pillow
+eclipse-zenoh

@@ -1,0 +1,26 @@
+[features]
+multi_agent = true
+
+[agents]
+max_threads = 6
+max_depth = 1
+
+[agents.architecture_designer]
+description = "Designs system architecture with clear boundaries, constraints, and trade-offs. Prioritizes scalability, maintainability, and operability with practical, implementable structures."
+config_file = "agents/architecture_designer.toml"
+
+[agents.implementer]
+description = "Implements features based on the given design with correctness and minimal safe changes. Prioritizes readability, maintainability, and test coverage while preserving existing behavior."
+config_file = "agents/implementer.toml"
+
+[agents.reviewer]
+description = "PR reviewer focused on correctness, security, and missing tests."
+config_file = "agents/reviewer.toml"
+
+[agents.explorer]
+description = "Read-only codebase explorer for gathering evidence before changes are proposed."
+config_file = "agents/explorer.toml"
+
+[agents.docs_researcher]
+description = "Documentation specialist that verifies APIs, framework behavior, and release notes."
+config_file = "agents/docs-researcher.toml"

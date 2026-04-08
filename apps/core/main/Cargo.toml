@@ -1,0 +1,8 @@
+[package]
+name = "main"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zenoh.workspace = true
+tokio.workspace = true
