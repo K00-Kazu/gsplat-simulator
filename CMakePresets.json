@@ -17,13 +17,53 @@
       "binaryDir": "${sourceDir}/build/cmake/${presetName}",
       "cacheVariables": {
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
       }
     },
     {
       "name": "ui-debug",
-      "displayName": "UI Debug",
+      "displayName": "UI Debug (Windows)",
       "inherits": "vs2022-base",
       "cacheVariables": {
+        "GSPLAT_UI_ENABLE_ZENOH": "ON"
+      }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/cmake/${presetName}",
+      "cacheVariables": {
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_PREFIX_PATH": "$env{QT_ROOT}"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "ui-linux-release",
+      "displayName": "UI Release (Linux)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/ui",
+      "cacheVariables": {
+        "GSPLAT_UI_ENABLE_ZENOH": "ON"
+      }
+    },
+    {
+      "name": "ui-linux-debug",
+      "displayName": "UI Debug (Linux)",
+      "inherits": "linux-base",
+      "binaryDir": "${sourceDir}/build/ui-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
         "GSPLAT_UI_ENABLE_ZENOH": "ON"
       }
     }
@@ -33,6 +73,14 @@
       "name": "ui-debug",
       "configurePreset": "ui-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "ui-linux-release",
+      "configurePreset": "ui-linux-release"
+    },
+    {
+      "name": "ui-linux-debug",
+      "configurePreset": "ui-linux-debug"
     }
   ]
 }

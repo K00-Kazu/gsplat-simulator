@@ -1,0 +1,53 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+apps/render/.venv
+apps/render/venv
+*.egg-info
+dist
+build
+*.egg
+.pytest_cache
+.coverage
+
+# Rust
+target/
+Cargo.lock
+
+# CMake
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+apps/render/*.log
+
+# Third-party (will be built in Docker)
+third_party/
+
+# Documentation
+docs/
+
+# Agent files
+.agents/
+.codex/
+
+# Claude memory
+.claude/
