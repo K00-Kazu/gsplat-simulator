@@ -1,0 +1,45 @@
+services:
+  gsplat-simulator:
+    image: gsplat-simulator:latest
+    container_name: gsplat-sim
+    build:
+      context: .
+      dockerfile: Dockerfile
+    runtime: nvidia
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # 以下の環境変数はDockerfileで自動設定されています
+      # 異なる値を使いたい場合のみ、以下のコメントを外して上書きしてください
+      # - QT_ROOT=/opt/Qt/6.6.0/gcc_64
+      # - ZENOHC_ROOT=/opt/zenoh/zenohc
+      # - ZENOHCXX_ROOT=/opt/zenoh/zenohcxx
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - .:/workspace:rw
+      # Optionally mount host Qt6 if Docker build Qt fails
+      # - /opt/Qt:/opt/Qt:ro
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    # Keep container running
+    command: sleep infinity
+    # Network mode for zenoh communication
+    network_mode: host
+    # Optional: resource limits
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+# For production, consider adding separate services for each component
+#   render-worker:
+#     ...
+#   simulation-core:
+#     ...
+#   ui:
+#     ...
