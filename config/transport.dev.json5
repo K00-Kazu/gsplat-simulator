@@ -46,14 +46,19 @@
 
     ui: {
       command: "simulation/ui/cmd/**",
+      camera_command: "simulation/ui/cmd/camera",
       state: "simulation/ui/state/**",
       stats: "simulation/ui/stats/**",
       preview: "simulation/ui/preview/**",
+      preview_metadata: "simulation/ui/preview/frame_metadata",
+      preview_payload: "simulation/ui/preview/frame_payload",
     },
 
     render: {
+      camera_request: "simulation/render/request/camera",
       request: "simulation/render/request/**",
       response: "simulation/render/response/**",
+      state: "simulation/render/response/state",
     },
 
     transport: {

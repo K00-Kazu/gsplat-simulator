@@ -11,3 +11,5 @@ matplotlib
 plyfile
 pillow
 eclipse-zenoh
+gsplat==1.5.3
+ninja

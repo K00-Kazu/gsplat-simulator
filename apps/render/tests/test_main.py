@@ -1,19 +1,40 @@
 from __future__ import annotations
 
+from pathlib import Path
 import signal
 from threading import Event
+from types import SimpleNamespace
 
 import main
+import pytest
+import render_worker
+import zenoh_worker
 
 
 class FakeZenohWorker:
     def __init__(self) -> None:
-        self.publish_calls = 0
+        self.publish_frame_calls = 0
+        self.published_frames: list[object | None] = []
+        self.publish_current_state_calls = 0
         self.close_calls = 0
         self.publish_interval_s = 0.5
+        self.updated_states: list[render_worker.RenderWorkerState] = []
+        self.camera_offset = render_worker.CameraOffsetState()
+        self.consume_camera_update_calls = 0
+
+    def publish_frame(self, frame: object | None = None) -> None:
+        self.publish_frame_calls += 1
+        self.published_frames.append(frame)
 
     def publish_current_state(self) -> None:
-        self.publish_calls += 1
+        self.publish_current_state_calls += 1
+
+    def update_state(self, state: render_worker.RenderWorkerState) -> None:
+        self.updated_states.append(state)
+
+    def consume_camera_update(self) -> bool:
+        self.consume_camera_update_calls += 1
+        return False
 
     def close(self) -> None:
         self.close_calls += 1
@@ -59,10 +80,7 @@ def test_worker_threads_start_and_stop_cleanly() -> None:
     stop_event.set()
     fake_worker = FakeZenohWorker()
 
-    command_thread, render_thread = main.build_worker_threads(
-        stop_event=stop_event,
-        zenoh_worker_factory=lambda: fake_worker,
-    )
+    command_thread, render_thread = main.build_worker_threads(stop_event=stop_event, worker=fake_worker)
 
     command_thread.start()
     render_thread.start()
@@ -73,8 +91,10 @@ def test_worker_threads_start_and_stop_cleanly() -> None:
     assert render_thread.name == "render-thread"
     assert not command_thread.is_alive()
     assert not render_thread.is_alive()
-    assert fake_worker.publish_calls == 1
-    assert fake_worker.close_calls == 1
+    assert fake_worker.publish_frame_calls == 0
+    assert fake_worker.publish_current_state_calls == 1
+    assert fake_worker.close_calls == 0
+    assert fake_worker.updated_states == []
 
 
 def test_run_command_loop_publishes_until_stop_requested() -> None:
@@ -83,24 +103,75 @@ def test_run_command_loop_publishes_until_stop_requested() -> None:
 
     main.run_command_loop(
         stop_event=stop_event,  # type: ignore[arg-type]
-        zenoh_worker_factory=lambda: fake_worker,
+        worker=fake_worker,
     )
 
-    assert fake_worker.publish_calls == 3
+    assert fake_worker.publish_frame_calls == 0
+    assert fake_worker.publish_current_state_calls == 3
     assert fake_worker.close_calls == 1
+
+
+def test_publish_rendered_preview_frame_wraps_rgb_payload_for_transport() -> None:
+    fake_worker = FakeZenohWorker()
+    rendered_frame = render_worker.RenderedPreviewFrame(
+        width=2,
+        height=1,
+        payload=b"\x01\x02\x03\x04\x05\x06",
+    )
+
+    main.publish_rendered_preview_frame(fake_worker, rendered_frame)
+
+    assert fake_worker.publish_frame_calls == 1
+    assert isinstance(fake_worker.published_frames[0], zenoh_worker.FrameMessage)
+    frame_message = fake_worker.published_frames[0]
+    assert frame_message.metadata.width == 2
+    assert frame_message.metadata.height == 1
+    assert frame_message.metadata.stride == 6
+    assert frame_message.payload == rendered_frame.payload
+
+
+def test_restart_in_utf8_mode_if_needed_reexecutes_main_on_windows(monkeypatch) -> None:
+    captured_command: dict[str, object] = {}
+
+    def fake_run(command, check: bool, env: dict[str, str]):
+        captured_command["command"] = command
+        captured_command["check"] = check
+        captured_command["env"] = env
+        return SimpleNamespace(returncode=11)
+
+    monkeypatch.setattr(main.os, "name", "nt")
+    monkeypatch.setattr(main.sys, "executable", "python.exe")
+    monkeypatch.setattr(main.sys, "flags", SimpleNamespace(utf8_mode=0))
+    monkeypatch.setattr(main.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main.restart_in_utf8_mode_if_needed(["--demo"])
+
+    assert excinfo.value.code == 11
+    assert captured_command["command"] == [
+        "python.exe",
+        "-X",
+        "utf8",
+        Path(main.__file__).resolve(),
+        "--demo",
+    ]
+    assert captured_command["check"] is False
+    assert captured_command["env"]["PYTHONUTF8"] == "1"
 
 
 def test_main_stops_threads_when_keyboard_interrupt_is_raised(monkeypatch) -> None:
     captured_stop_event: dict[str, Event] = {}
     command_thread = FakeThread()
     render_thread = FakeThread()
+    fake_worker = FakeZenohWorker()
     wait_calls = 0
 
     def fake_build_worker_threads(
         stop_event: Event,
-        zenoh_worker_factory=main.ZenohWorker.create,
+        worker: FakeZenohWorker,
     ) -> tuple[FakeThread, FakeThread]:
         captured_stop_event["value"] = stop_event
+        assert worker is fake_worker
         return command_thread, render_thread
 
     def fake_wait_for_threads(
@@ -117,10 +188,12 @@ def test_main_stops_threads_when_keyboard_interrupt_is_raised(monkeypatch) -> No
     monkeypatch.setattr(main, "build_worker_threads", fake_build_worker_threads)
     monkeypatch.setattr(main, "wait_for_threads", fake_wait_for_threads)
 
-    assert main.main() == 0
+    assert main.main(zenoh_worker_factory=lambda: fake_worker) == 0
     assert captured_stop_event["value"].is_set()
     assert command_thread.start_calls == 1
     assert render_thread.start_calls == 1
+    assert fake_worker.publish_current_state_calls == 1
+    assert fake_worker.close_calls == 1
     assert wait_calls == 2
 
 
