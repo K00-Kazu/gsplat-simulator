@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 get_filename_component(GSPLAT_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(GSPLAT_UI_LOCAL_ZENOHC_ROOT "${GSPLAT_REPO_ROOT}/third_party/zenoh/windows/zenohc")
 set(GSPLAT_UI_LOCAL_ZENOHCXX_ROOT "${GSPLAT_REPO_ROOT}/third_party/zenoh/windows/zenohcxx")
+file(TO_CMAKE_PATH "${GSPLAT_REPO_ROOT}/config/transport.dev.json" GSPLAT_UI_TRANSPORT_CONFIG_PATH)
 
 function(gsplat_ui_define_zenohc_imported_target zenohc_root)
     set(zenohc_lib_candidates
@@ -188,11 +189,17 @@ qt_add_executable(gsplat_ui
     src/main.cpp
     src/main_window.cpp
     src/main_window.h
+    src/render_worker.cpp
+    src/render_worker.h
     src/zenoh_smoke_test.cpp
     src/zenoh_smoke_test.h
 )
 
 target_link_libraries(gsplat_ui PRIVATE Qt6::Widgets)
+target_compile_definitions(
+    gsplat_ui PRIVATE
+    GSPLAT_UI_TRANSPORT_CONFIG_PATH=\"${GSPLAT_UI_TRANSPORT_CONFIG_PATH}\"
+)
 
 if(GSPLAT_UI_ENABLE_ZENOH)
     target_link_libraries(gsplat_ui PRIVATE zenohcxx::zenohc)

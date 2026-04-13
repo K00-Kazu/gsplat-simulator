@@ -172,5 +172,20 @@ python run.py dev
 ```
 assets/sample_models/
 ```
-
 ---
+
+# 10. build
+ui
+```bash
+$env:QT_ROOT="C:\path\to\Qt\6.x.x\msvc2022_64"
+$env:ZENOHC_ROOT="C:\path\to\zenohc"
+$env:ZENOHCXX_ROOT="C:\path\to\zenohcxx"
+
+cmake -S apps/ui -B build/ui -DGSPLAT_UI_ENABLE_ZENOH=ON
+cmake --build build/ui --config Release
+```
+
+```bash
+cmake -S apps/ui -B build/ui
+cmake --build build/ui --config Release
+```

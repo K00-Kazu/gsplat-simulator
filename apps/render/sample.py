@@ -106,7 +106,7 @@ def main():
         raise RuntimeError("gsplat の実用描画は CUDA 前提です。")
 
     #ply_path = "./sample_data/Compressed_PLY(SuperSplat)/cactus_splat3_11kSteps_1.5M_splats.compressed.ply"
-    ply_path = "./sample_data/PLY(postshot)/cactus_splat3_25kSteps_2M_splats.ply"
+    ply_path = "../../assets/cactus_splat3_25kSteps_2M_splats.ply"
     out_path = "render.png"
 
     means, quats, scales, opacities, colors = load_gs_ply(ply_path, device=device)
