@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.21)
 
+if(POLICY CMP0144)
+    cmake_policy(SET CMP0144 NEW)
+endif()
+
 project(gsplat_ui LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -10,6 +14,7 @@ get_filename_component(GSPLAT_REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSO
 set(GSPLAT_UI_LOCAL_ZENOHC_ROOT "${GSPLAT_REPO_ROOT}/third_party/zenoh/windows/zenohc")
 set(GSPLAT_UI_LOCAL_ZENOHCXX_ROOT "${GSPLAT_REPO_ROOT}/third_party/zenoh/windows/zenohcxx")
 file(TO_CMAKE_PATH "${GSPLAT_REPO_ROOT}/config/transport.dev.json" GSPLAT_UI_TRANSPORT_CONFIG_PATH)
+set(GSPLAT_UI_SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 function(gsplat_ui_define_zenohc_imported_target zenohc_root)
     set(zenohc_lib_candidates
@@ -125,6 +130,8 @@ endif()
 
 set(GSPLAT_UI_ENABLE_ZENOH OFF CACHE BOOL "Enable zenoh smoke test support in the Qt UI")
 
+include(CTest)
+
 find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 if(GSPLAT_UI_ENABLE_ZENOH)
@@ -195,6 +202,7 @@ qt_add_executable(gsplat_ui
     src/zenoh_smoke_test.h
 )
 
+target_include_directories(gsplat_ui PRIVATE "${GSPLAT_UI_SRC_DIR}")
 target_link_libraries(gsplat_ui PRIVATE Qt6::Widgets)
 target_compile_definitions(
     gsplat_ui PRIVATE
@@ -210,6 +218,30 @@ if(GSPLAT_UI_ENABLE_ZENOH)
     endif()
 else()
     target_compile_definitions(gsplat_ui PRIVATE GSPLAT_UI_WITH_ZENOH=0)
+endif()
+
+if(BUILD_TESTING)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+
+    qt_add_executable(gsplat_ui_tests
+        tests/main_window_test.cpp
+        src/main_window.cpp
+        src/main_window.h
+        src/render_worker.cpp
+        src/render_worker.h
+        src/zenoh_smoke_test.cpp
+        src/zenoh_smoke_test.h
+    )
+
+    target_include_directories(gsplat_ui_tests PRIVATE "${GSPLAT_UI_SRC_DIR}")
+    target_link_libraries(gsplat_ui_tests PRIVATE Qt6::Widgets Qt6::Test)
+    target_compile_definitions(
+        gsplat_ui_tests PRIVATE
+        GSPLAT_UI_TRANSPORT_CONFIG_PATH=\"${GSPLAT_UI_TRANSPORT_CONFIG_PATH}\"
+        GSPLAT_UI_WITH_ZENOH=0
+    )
+
+    add_test(NAME gsplat_ui_tests COMMAND gsplat_ui_tests -platform offscreen)
 endif()
 
 if(WIN32)

@@ -2,12 +2,16 @@
 
 #include "render_worker.h"
 
+#include <algorithm>
+#include <QDockWidget>
+#include <QFontMetrics>
 #include <QGridLayout>
 #include <QLabel>
 #include <QPixmap>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QSizePolicy>
+#include <QStatusBar>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -16,7 +20,7 @@ namespace
 constexpr double kCameraOffsetStep = 0.2;
 }
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     : QMainWindow(parent)
 {
     setWindowTitle("gsplat-simulator UI");
@@ -36,29 +40,52 @@ MainWindow::MainWindow(QWidget* parent)
     subtitle_label->setWordWrap(true);
     subtitle_label->setStyleSheet("color: #5f6368; font-size: 14px;");
 
-    render_status_label_ = new QLabel("render subscriber: starting...", central_widget);
-    render_status_label_->setStyleSheet("font-size: 18px; font-weight: 600;");
+    preview_label_ = new QLabel("No frame received yet.", central_widget);
+    preview_label_->setObjectName("previewLabel");
+    preview_label_->setAlignment(Qt::AlignCenter);
+    preview_label_->setMinimumSize(640, 360);
+    preview_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    preview_label_->setStyleSheet(
+        "background-color: #111418; color: #d2d6db; border: 1px solid #2f353d; border-radius: 12px;");
 
-    render_detail_label_ = new QLabel(
-        "Waiting for frame metadata and payload subscriptions to come online.",
-        central_widget);
-    render_detail_label_->setWordWrap(true);
-    render_detail_label_->setStyleSheet("color: #3c4043; font-size: 14px;");
+    layout->addWidget(title_label);
+    layout->addWidget(subtitle_label);
+    layout->addSpacing(12);
+    layout->addWidget(preview_label_, 1);
 
-    auto* camera_controls_label = new QLabel("Camera controls", central_widget);
-    camera_controls_label->setStyleSheet("font-size: 18px; font-weight: 600;");
+    setCentralWidget(central_widget);
 
-    camera_offset_label_ = new QLabel(central_widget);
+    auto* camera_controls_dock = new QDockWidget("Camera controls", this);
+    camera_controls_dock->setObjectName("cameraControlsDock");
+    camera_controls_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    camera_controls_dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
+
+    auto* camera_controls_panel = new QWidget(camera_controls_dock);
+    camera_controls_panel->setMinimumWidth(240);
+
+    auto* panel_layout = new QVBoxLayout(camera_controls_panel);
+    panel_layout->setContentsMargins(16, 16, 16, 16);
+    panel_layout->setSpacing(12);
+
+    auto* camera_hint_label = new QLabel(
+        "Adjust the virtual camera offset for the render preview.",
+        camera_controls_panel);
+    camera_hint_label->setWordWrap(true);
+    camera_hint_label->setStyleSheet("color: #5f6368; font-size: 13px;");
+
+    camera_offset_label_ = new QLabel(camera_controls_panel);
+    camera_offset_label_->setObjectName("cameraOffsetLabel");
+    camera_offset_label_->setWordWrap(true);
     camera_offset_label_->setStyleSheet("color: #3c4043; font-size: 14px;");
 
     auto* camera_controls_layout = new QGridLayout();
     camera_controls_layout->setHorizontalSpacing(8);
     camera_controls_layout->setVerticalSpacing(8);
 
-    auto* up_button = new QPushButton("Up", central_widget);
-    auto* left_button = new QPushButton("Left", central_widget);
-    auto* right_button = new QPushButton("Right", central_widget);
-    auto* down_button = new QPushButton("Down", central_widget);
+    auto* up_button = new QPushButton("Up", camera_controls_panel);
+    auto* left_button = new QPushButton("Left", camera_controls_panel);
+    auto* right_button = new QPushButton("Right", camera_controls_panel);
+    auto* down_button = new QPushButton("Down", camera_controls_panel);
 
     camera_controls_layout->addWidget(up_button, 0, 1);
     camera_controls_layout->addWidget(left_button, 1, 0);
@@ -70,52 +97,77 @@ MainWindow::MainWindow(QWidget* parent)
     connect(right_button, &QPushButton::clicked, this, [this]() { adjustCameraOffset(kCameraOffsetStep, 0.0); });
     connect(down_button, &QPushButton::clicked, this, [this]() { adjustCameraOffset(0.0, -kCameraOffsetStep); });
 
-    preview_label_ = new QLabel("No frame received yet.", central_widget);
-    preview_label_->setAlignment(Qt::AlignCenter);
-    preview_label_->setMinimumSize(640, 360);
-    preview_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-    preview_label_->setStyleSheet(
-        "background-color: #111418; color: #d2d6db; border: 1px solid #2f353d; border-radius: 12px;");
+    panel_layout->addWidget(camera_hint_label);
+    panel_layout->addWidget(camera_offset_label_);
+    panel_layout->addLayout(camera_controls_layout);
+    panel_layout->addStretch(1);
 
-    layout->addWidget(title_label);
-    layout->addWidget(subtitle_label);
-    layout->addSpacing(12);
-    layout->addWidget(render_status_label_);
-    layout->addWidget(render_detail_label_);
-    layout->addSpacing(12);
-    layout->addWidget(camera_controls_label);
-    layout->addWidget(camera_offset_label_);
-    layout->addLayout(camera_controls_layout);
-    layout->addSpacing(12);
-    layout->addWidget(preview_label_, 1);
+    camera_controls_dock->setWidget(camera_controls_panel);
+    addDockWidget(Qt::RightDockWidgetArea, camera_controls_dock);
 
-    setCentralWidget(central_widget);
+    auto* bottom_status_bar = new QStatusBar(this);
+    bottom_status_bar->setObjectName("renderStatusBar");
+    bottom_status_bar->setSizeGripEnabled(false);
+
+    render_status_label_ = new QLabel("render subscriber: starting...", bottom_status_bar);
+    render_status_label_->setObjectName("renderStatusLabel");
+    render_status_label_->setStyleSheet("font-size: 12px; font-weight: 600; color: #5f6368;");
+
+    render_detail_label_ = new QLabel(bottom_status_bar);
+    render_detail_label_->setObjectName("renderDetailLabel");
+    render_detail_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    render_detail_label_->setStyleSheet("font-size: 12px; color: #5f6368;");
+
+    bottom_status_bar->addWidget(render_status_label_);
+    bottom_status_bar->addWidget(render_detail_label_, 1);
+    setStatusBar(bottom_status_bar);
 
     render_worker_ = new RenderWorker(this);
     connect(render_worker_, &RenderWorker::statusChanged, this, &MainWindow::applyRenderStatus);
     connect(render_worker_, &RenderWorker::frameReady, this, &MainWindow::applyPreviewFrame);
-    render_worker_->subscribe();
+    if (autoSubscribe)
+    {
+        render_worker_->subscribe();
+    }
+
+    render_detail_text_ = QStringLiteral("Waiting for frame metadata and payload subscriptions to come online.");
+    refreshRenderDetailLabel();
     refreshCameraOffsetLabel();
 }
 
 void MainWindow::applyRenderStatus(const QString& summary, const QString& detail, bool isError)
 {
     render_status_label_->setText(summary);
-    render_detail_label_->setText(detail);
+    render_status_label_->setToolTip(summary);
+    render_detail_text_ = detail;
+    render_detail_label_->setToolTip(detail);
+    refreshRenderDetailLabel();
 
     if (!isError)
     {
-        render_status_label_->setStyleSheet("color: #137333; font-size: 18px; font-weight: 600;");
+        render_status_label_->setStyleSheet("color: #137333; font-size: 12px; font-weight: 600;");
         return;
     }
 
-    render_status_label_->setStyleSheet("color: #b3261e; font-size: 18px; font-weight: 600;");
+    render_status_label_->setStyleSheet("color: #b3261e; font-size: 12px; font-weight: 600;");
 }
 
 void MainWindow::applyPreviewFrame(const QImage& image)
 {
     latest_preview_image_ = image;
     refreshPreviewPixmap();
+}
+
+void MainWindow::refreshRenderDetailLabel()
+{
+    if (render_detail_label_ == nullptr)
+    {
+        return;
+    }
+
+    const int available_width = std::max(render_detail_label_->width(), 120);
+    const QFontMetrics metrics(render_detail_label_->font());
+    render_detail_label_->setText(metrics.elidedText(render_detail_text_, Qt::ElideRight, available_width));
 }
 
 void MainWindow::adjustCameraOffset(double deltaX, double deltaZ)
@@ -162,5 +214,6 @@ void MainWindow::refreshCameraOffsetLabel()
 void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
+    refreshRenderDetailLabel();
     refreshPreviewPixmap();
 }
