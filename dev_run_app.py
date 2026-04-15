@@ -241,8 +241,7 @@ def main():
         manager.send_keys("render", "source .venv/bin/activate")
         manager.send_keys("render", "echo 'Python venv activated'")
         manager.send_keys("render", "echo 'Starting RenderWorker...'")
-        manager.send_keys("render", "echo 'Press Enter to start RenderWorker'")
-        manager.send_keys("render", "python main.py", enter=False)
+        manager.send_keys("render", "python main.py")
 
         # Window 2: Simulation Core
         print("Setting up Simulation Core window...")
