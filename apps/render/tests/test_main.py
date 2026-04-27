@@ -4,6 +4,7 @@ from pathlib import Path
 import signal
 from threading import Event
 from types import SimpleNamespace
+from dataclasses import replace
 
 import main
 import pytest
@@ -15,16 +16,28 @@ class FakeZenohWorker:
     def __init__(self) -> None:
         self.publish_frame_calls = 0
         self.published_frames: list[object | None] = []
+        self.published_preview_camera_states: list[render_worker.PreviewCameraState] = []
+        self.publish_operations: list[str] = []
         self.publish_current_state_calls = 0
         self.close_calls = 0
         self.publish_interval_s = 0.5
         self.updated_states: list[render_worker.RenderWorkerState] = []
         self.camera_offset = render_worker.CameraOffsetState()
+        self.preview_ply_path = Path("/tmp/default-scene.ply")
+        self.preview_focal_length_px = 900.0
         self.consume_camera_update_calls = 0
 
     def publish_frame(self, frame: object | None = None) -> None:
         self.publish_frame_calls += 1
         self.published_frames.append(frame)
+        self.publish_operations.append("frame")
+
+    def publish_preview_camera_state(
+        self,
+        state: render_worker.PreviewCameraState,
+    ) -> None:
+        self.published_preview_camera_states.append(state)
+        self.publish_operations.append("camera_state")
 
     def publish_current_state(self) -> None:
         self.publish_current_state_calls += 1
@@ -128,6 +141,98 @@ def test_publish_rendered_preview_frame_wraps_rgb_payload_for_transport() -> Non
     assert frame_message.metadata.height == 1
     assert frame_message.metadata.stride == 6
     assert frame_message.payload == rendered_frame.payload
+
+
+def test_preview_publication_sequencer_publishes_matching_frame_and_camera_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_worker = FakeZenohWorker()
+    sequencer = main.PreviewPublicationSequencer()
+    preview_render = render_worker.PreviewRenderResult(
+        frame=render_worker.RenderedPreviewFrame(
+            width=2,
+            height=1,
+            payload=b"\x01\x02\x03\x04\x05\x06",
+        ),
+        camera_state=render_worker.PreviewCameraState(
+            eye=(0.0, -10.0, 4.0),
+            target=(0.0, 0.0, 0.0),
+            up=(0.0, 0.0, 1.0),
+            scene_center=(0.0, 0.0, 0.0),
+            scene_radius=5.0,
+            focal_length_px=900.0,
+            image_width=2,
+            image_height=1,
+            world_up_axis="z",
+            gizmo_enabled=True,
+        ),
+    )
+    monkeypatch.setattr(main.zenoh_worker, "build_utc_timestamp", lambda: "2026-04-15T00:00:00Z")
+
+    sequencer.publish(fake_worker, preview_render)
+    sequencer.publish(fake_worker, replace(preview_render))
+
+    assert fake_worker.publish_frame_calls == 2
+    assert len(fake_worker.published_preview_camera_states) == 2
+    first_frame = fake_worker.published_frames[0]
+    second_frame = fake_worker.published_frames[1]
+    first_camera_state = fake_worker.published_preview_camera_states[0]
+    second_camera_state = fake_worker.published_preview_camera_states[1]
+    assert isinstance(first_frame, zenoh_worker.FrameMessage)
+    assert isinstance(second_frame, zenoh_worker.FrameMessage)
+    assert first_frame.metadata.frame_id == 1
+    assert second_frame.metadata.frame_id == 2
+    assert first_frame.metadata.timestamp == "2026-04-15T00:00:00Z"
+    assert second_frame.metadata.timestamp == "2026-04-15T00:00:00Z"
+    assert first_camera_state.frame_id == 1
+    assert second_camera_state.frame_id == 2
+    assert first_camera_state.timestamp == "2026-04-15T00:00:00Z"
+    assert second_camera_state.timestamp == "2026-04-15T00:00:00Z"
+    assert fake_worker.publish_operations == [
+        "frame",
+        "camera_state",
+        "frame",
+        "camera_state",
+    ]
+
+
+def test_build_worker_threads_forwards_preview_scene_and_zoom_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_worker = FakeZenohWorker()
+    fake_worker.preview_ply_path = Path("/tmp/scene.ply")
+    fake_worker.preview_focal_length_px = 1234.0
+    captured_args: dict[str, object] = {}
+
+    def fake_render_gaussian_splat_preview_result(
+        *,
+        ply_path: Path,
+        focal_length: float,
+        camera_offset: render_worker.CameraOffsetState,
+    ) -> render_worker.PreviewRenderResult:
+        captured_args["ply_path"] = ply_path
+        captured_args["focal_length"] = focal_length
+        captured_args["camera_offset"] = camera_offset
+        return render_worker.PreviewRenderResult(
+            frame=render_worker.RenderedPreviewFrame(width=1, height=1, payload=b"\x00\x00\x00"),
+            camera_state=render_worker.PreviewCameraState(),
+        )
+
+    monkeypatch.setattr(
+        main,
+        "render_gaussian_splat_preview_result",
+        fake_render_gaussian_splat_preview_result,
+    )
+
+    _command_thread, render_thread = main.build_worker_threads(Event(), fake_worker)
+    render_frame = render_thread._args[3]
+    render_frame()
+
+    assert captured_args == {
+        "ply_path": Path("/tmp/scene.ply"),
+        "focal_length": 1234.0,
+        "camera_offset": render_worker.CameraOffsetState(),
+    }
 
 
 def test_restart_in_utf8_mode_if_needed_reexecutes_main_on_windows(monkeypatch) -> None:

@@ -15,16 +15,26 @@ use zenoh::bytes::Encoding;
 const DEFAULT_KEY_EXPR: &str = "simulation/core/gaze_vector";
 const DEFAULT_RENDER_STATE_KEY_EXPR: &str = "simulation/render/response/state";
 const DEFAULT_RENDER_REQUEST_KEY_EXPR: &str = "simulation/render/request/camera";
+const DEFAULT_RENDER_PREVIEW_SETTINGS_KEY_EXPR: &str =
+    "simulation/render/request/preview_settings";
 const DEFAULT_FRAME_METADATA_KEY_EXPR: &str = "simulation/core/frame_metadata";
 const DEFAULT_FRAME_PAYLOAD_KEY_EXPR: &str = "simulation/core/frame_payload";
+const DEFAULT_PREVIEW_CAMERA_STATE_KEY_EXPR: &str = "simulation/core/preview_camera_state";
 const DEFAULT_UI_COMMAND_KEY_EXPR: &str = "simulation/ui/cmd/camera";
 const DEFAULT_UI_PREVIEW_KEY_EXPR: &str = "simulation/ui/preview/**";
+const DEFAULT_UI_STATE_KEY_EXPR: &str = "simulation/ui/state/**";
 const DEFAULT_UI_PREVIEW_METADATA_KEY_EXPR: &str = "simulation/ui/preview/frame_metadata";
 const DEFAULT_UI_PREVIEW_PAYLOAD_KEY_EXPR: &str = "simulation/ui/preview/frame_payload";
+const DEFAULT_UI_PREVIEW_CAMERA_STATE_KEY_EXPR: &str = "simulation/ui/preview/camera_state";
+const DEFAULT_UI_PREVIEW_SETTINGS_KEY_EXPR: &str = "simulation/ui/state/preview_settings";
 const DEFAULT_INTERVAL_MS: u64 = 1_000;
 const DEFAULT_STARTUP_DELAY_MS: u64 = 1_000;
 const DEFAULT_TRANSPORT_CONFIG_RELATIVE_PATH: &str = "../../../config/transport.dev.json";
+const DEFAULT_RENDER_CONFIG_RELATIVE_PATH: &str = "../../../config/render.dev.json";
 const DEFAULT_VECTOR: [f32; 3] = [0.0, 0.0, 1.0];
+const DEFAULT_PREVIEW_PLY_PATH: &str = "assets/sample_point_cloud.ply";
+const DEFAULT_PREVIEW_FOCAL_LENGTH_PX: f64 = 900.0;
+const MIN_PREVIEW_FOCAL_LENGTH_PX: f64 = 100.0;
 const PAYLOAD_PREVIEW_BYTES: usize = 12;
 
 type DynError = Box<dyn Error + Send + Sync>;
@@ -52,11 +62,28 @@ pub struct FrameMetadata {
 pub struct TransportTopicKeyExprs {
     pub ui_camera_command: String,
     pub render_camera_request: String,
+    pub render_preview_settings: String,
     pub render_state: String,
     pub render_frame_metadata: String,
     pub render_frame_payload: String,
+    pub render_preview_camera_state: String,
     pub ui_preview_metadata: String,
     pub ui_preview_payload: String,
+    pub ui_preview_camera_state: String,
+    pub ui_preview_settings: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PreviewSettings {
+    pub ply_path: String,
+    pub focal_length_px: f64,
+}
+
+#[derive(Debug)]
+struct PreviewSettingsStore {
+    current: PreviewSettings,
+    config_path: PathBuf,
+    repo_root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +95,7 @@ pub struct PreviewFrameRoute {
 #[derive(Debug, Default)]
 pub struct PreviewFrameRouter {
     last_frame_metadata: Option<FrameMetadata>,
+    pending_payload: Option<Vec<u8>>,
 }
 
 impl CliOptions {
@@ -132,18 +160,62 @@ impl CliOptions {
 }
 
 impl PreviewFrameRouter {
-    pub fn store_frame_metadata(&mut self, metadata: FrameMetadata) {
-        self.last_frame_metadata = Some(metadata);
+    pub fn store_frame_metadata(&mut self, metadata: FrameMetadata) -> Option<PreviewFrameRoute> {
+        self.last_frame_metadata = Some(metadata.clone());
+        self.pending_payload
+            .take()
+            .map(|payload| PreviewFrameRoute { metadata, payload })
     }
 
-    pub fn build_preview_route(&self, payload: &[u8]) -> Option<PreviewFrameRoute> {
+    pub fn build_preview_route(&mut self, payload: &[u8]) -> Option<PreviewFrameRoute> {
         // Payloads do not yet include a frame identifier, so routing uses the latest metadata.
-        self.last_frame_metadata
-            .clone()
-            .map(|metadata| PreviewFrameRoute {
+        let Some(metadata) = self.last_frame_metadata.clone() else {
+            self.pending_payload = Some(payload.to_vec());
+            return None;
+        };
+
+        Some(PreviewFrameRoute {
                 metadata,
                 payload: payload.to_vec(),
             })
+    }
+}
+
+impl PreviewSettingsStore {
+    fn load(config_path: PathBuf, repo_root: PathBuf) -> Result<Self, DynError> {
+        let current = load_preview_settings(config_path.as_path(), repo_root.as_path())?;
+        Ok(Self {
+            current,
+            config_path,
+            repo_root,
+        })
+    }
+
+    fn current_payload(&self) -> String {
+        build_preview_settings_payload(&self.current)
+    }
+
+    fn apply_command_payload(&mut self, payload: &[u8]) -> Result<Option<String>, DynError> {
+        let Some(next_settings) = parse_preview_settings_update_payload(
+            payload,
+            &self.current,
+            self.repo_root.as_path(),
+        )?
+        else {
+            return Ok(None);
+        };
+
+        if next_settings == self.current {
+            return Ok(None);
+        }
+
+        save_preview_settings(
+            &next_settings,
+            self.config_path.as_path(),
+            self.repo_root.as_path(),
+        )?;
+        self.current = next_settings;
+        Ok(Some(self.current_payload()))
     }
 }
 
@@ -156,10 +228,14 @@ async fn publish_gaze_vector_loop_with_options(options: CliOptions) -> Result<()
     let transport_config = load_transport_config(options.transport_config_path.as_path())?;
     let config = build_config_from_transport_config(&transport_config)?;
     let topic_key_exprs = parse_transport_topic_key_exprs(&transport_config)?;
+    let preview_settings = Arc::new(Mutex::new(PreviewSettingsStore::load(
+        default_render_config_path(),
+        default_repo_root(),
+    )?));
     let session = zenoh::open(config).await?;
     declare_render_state_debug_subscriber(&session, topic_key_exprs.render_state.as_str()).await?;
     subscribe_preview_frame_ipc(&session, &topic_key_exprs).await?;
-    subscribe_ui_camera_commands(&session, &topic_key_exprs).await?;
+    subscribe_ui_camera_commands(&session, &topic_key_exprs, preview_settings.clone()).await?;
     let publisher = session.declare_publisher(options.key_expr.as_str()).await?;
     let interval = Duration::from_millis(options.interval_ms);
 
@@ -178,6 +254,7 @@ async fn publish_gaze_vector_loop_with_options(options: CliOptions) -> Result<()
             .put(payload)
             .encoding(Encoding::APPLICATION_JSON)
             .await?;
+        publish_current_preview_settings(&session, &topic_key_exprs, preview_settings.clone())?;
 
         published_count += 1;
 
@@ -200,6 +277,8 @@ async fn subscribe_preview_frame_ipc(
         session,
         topic_key_exprs.render_frame_metadata.as_str(),
         preview_router.clone(),
+        session.clone(),
+        topic_key_exprs.clone(),
     )
     .await?;
     declare_frame_payload_ipc_subscriber(
@@ -210,16 +289,26 @@ async fn subscribe_preview_frame_ipc(
         topic_key_exprs.clone(),
     )
     .await?;
+    declare_preview_camera_state_ipc_subscriber(
+        session,
+        topic_key_exprs.render_preview_camera_state.as_str(),
+        session.clone(),
+        topic_key_exprs.clone(),
+    )
+    .await?;
     Ok(())
 }
 
 async fn subscribe_ui_camera_commands(
     session: &zenoh::Session,
     topic_key_exprs: &TransportTopicKeyExprs,
+    preview_settings: Arc<Mutex<PreviewSettingsStore>>,
 ) -> Result<(), DynError> {
     let session_for_render_request = session.clone();
+    let session_for_preview_settings = session.clone();
     let render_camera_request_key_expr = topic_key_exprs.render_camera_request.clone();
     let ui_camera_command_key_expr = topic_key_exprs.ui_camera_command.clone();
+    let topic_key_exprs_for_preview_settings = topic_key_exprs.clone();
 
     session
         .declare_subscriber(ui_camera_command_key_expr.as_str())
@@ -232,10 +321,55 @@ async fn subscribe_ui_camera_commands(
                 build_ui_camera_command_debug_line(key_expr.as_str(), payload_bytes.as_ref())
             );
 
+            let preview_settings_payload = {
+                let mut store = preview_settings
+                    .lock()
+                    .expect("preview settings mutex should not be poisoned");
+                match store.apply_command_payload(payload_bytes.as_ref()) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        eprintln!(
+                            "[preview-settings-route] key_expr={} error={error}",
+                            topic_key_exprs_for_preview_settings.ui_preview_settings.as_str()
+                        );
+                        return;
+                    }
+                }
+            };
+
+            if let Some(payload) = preview_settings_payload {
+                if let Err(error) = publish_preview_settings(
+                    &session_for_preview_settings,
+                    &topic_key_exprs_for_preview_settings,
+                    payload.as_str(),
+                ) {
+                    eprintln!(
+                        "[preview-settings-route] key_expr={} error={error}",
+                        topic_key_exprs_for_preview_settings.ui_preview_settings.as_str()
+                    );
+                    return;
+                }
+            }
+
+            let camera_request_payload = match build_render_camera_request_payload(payload_bytes.as_ref()) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    eprintln!(
+                        "[render-camera-request-route] key_expr={} error={error}",
+                        render_camera_request_key_expr.as_str()
+                    );
+                    return;
+                }
+            };
+
+            let Some(camera_request_payload) = camera_request_payload else {
+                return;
+            };
+
             if let Err(error) = publish_render_camera_request(
                 &session_for_render_request,
                 render_camera_request_key_expr.as_str(),
-                payload_bytes.as_ref(),
+                camera_request_payload.as_slice(),
             ) {
                 eprintln!(
                     "[render-camera-request-route] key_expr={} error={error}",
@@ -248,7 +382,7 @@ async fn subscribe_ui_camera_commands(
                 "{}",
                 build_render_camera_request_debug_line(
                     render_camera_request_key_expr.as_str(),
-                    payload_bytes.as_ref(),
+                    camera_request_payload.as_slice(),
                 )
             );
         })
@@ -291,6 +425,8 @@ async fn declare_frame_metadata_ipc_subscriber(
     session: &zenoh::Session,
     render_frame_metadata_key_expr: &str,
     preview_router: Arc<Mutex<PreviewFrameRouter>>,
+    session_for_preview_publish: zenoh::Session,
+    topic_key_exprs: TransportTopicKeyExprs,
 ) -> Result<(), DynError> {
     session
         .declare_subscriber(render_frame_metadata_key_expr)
@@ -313,10 +449,40 @@ async fn declare_frame_metadata_ipc_subscriber(
                         "{}",
                         build_render_frame_metadata_debug_line(key_expr.as_str(), &metadata)
                     );
-                    preview_router
+                    let preview_route = preview_router
                         .lock()
                         .expect("preview router mutex should not be poisoned")
                         .store_frame_metadata(metadata);
+                    let Some(preview_route) = preview_route else {
+                        return;
+                    };
+
+                    if let Err(error) = publish_preview_frame(
+                        &session_for_preview_publish,
+                        &topic_key_exprs,
+                        &preview_route,
+                    ) {
+                        eprintln!(
+                            "[ui-preview-route] key_expr={} error={error}",
+                            topic_key_exprs.ui_preview_payload.as_str()
+                        );
+                        return;
+                    }
+
+                    println!(
+                        "{}",
+                        build_ui_preview_frame_metadata_debug_line(
+                            topic_key_exprs.ui_preview_metadata.as_str(),
+                            &preview_route.metadata,
+                        )
+                    );
+                    println!(
+                        "{}",
+                        build_ui_preview_frame_payload_debug_line(
+                            topic_key_exprs.ui_preview_payload.as_str(),
+                            preview_route.payload.as_slice(),
+                        )
+                    );
                 }
                 Err(error) => eprintln!(
                     "[render-frame-metadata-ipc] key_expr={key_expr} error={error}"
@@ -355,8 +521,8 @@ async fn declare_frame_payload_ipc_subscriber(
                 .build_preview_route(payload_bytes.as_ref());
 
             let Some(preview_route) = preview_route else {
-                eprintln!(
-                    "[ui-preview-route] key_expr={} error=frame payload arrived before metadata",
+                println!(
+                    "[ui-preview-route] key_expr={} detail=buffering frame payload until metadata arrives",
                     topic_key_exprs.ui_preview_payload.as_str()
                 );
                 return;
@@ -397,6 +563,53 @@ async fn declare_frame_payload_ipc_subscriber(
     Ok(())
 }
 
+async fn declare_preview_camera_state_ipc_subscriber(
+    session: &zenoh::Session,
+    render_preview_camera_state_key_expr: &str,
+    session_for_preview_publish: zenoh::Session,
+    topic_key_exprs: TransportTopicKeyExprs,
+) -> Result<(), DynError> {
+    session
+        .declare_subscriber(render_preview_camera_state_key_expr)
+        .callback(move |sample| {
+            let key_expr = sample.key_expr().to_string();
+            let payload_bytes = sample.payload().to_bytes();
+
+            println!(
+                "{}",
+                build_render_preview_camera_state_debug_line(key_expr.as_str(), payload_bytes.as_ref())
+            );
+
+            if let Err(error) = publish_preview_camera_state(
+                &session_for_preview_publish,
+                &topic_key_exprs,
+                payload_bytes.as_ref(),
+            ) {
+                eprintln!(
+                    "[ui-preview-camera-state-route] key_expr={} error={error}",
+                    topic_key_exprs.ui_preview_camera_state.as_str()
+                );
+                return;
+            }
+
+            println!(
+                "{}",
+                build_ui_preview_camera_state_debug_line(
+                    topic_key_exprs.ui_preview_camera_state.as_str(),
+                    payload_bytes.as_ref(),
+                )
+            );
+        })
+        .background()
+        .await?;
+
+    println!(
+        "Subscribed to render preview camera state IPC on `{render_preview_camera_state_key_expr}`"
+    );
+
+    Ok(())
+}
+
 fn print_usage() {
     println!("Zenoh gaze vector publisher");
     println!("Usage:");
@@ -428,6 +641,13 @@ pub fn build_ui_camera_command_debug_line(key_expr: &str, payload: &[u8]) -> Str
 pub fn build_render_camera_request_debug_line(key_expr: &str, payload: &[u8]) -> String {
     format!(
         "[render-camera-request] key_expr={key_expr} payload={}",
+        String::from_utf8_lossy(payload)
+    )
+}
+
+pub fn build_render_preview_camera_state_debug_line(key_expr: &str, payload: &[u8]) -> String {
+    format!(
+        "[render-preview-camera-state-ipc] key_expr={key_expr} payload={}",
         String::from_utf8_lossy(payload)
     )
 }
@@ -488,12 +708,126 @@ pub fn build_ui_preview_frame_payload_debug_line(key_expr: &str, payload: &[u8])
     )
 }
 
+pub fn build_ui_preview_camera_state_debug_line(key_expr: &str, payload: &[u8]) -> String {
+    format!(
+        "[ui-preview-camera-state] key_expr={key_expr} payload={}",
+        String::from_utf8_lossy(payload)
+    )
+}
+
 pub fn reached_publish_limit(published_count: usize, max_messages: Option<usize>) -> bool {
     max_messages.is_some_and(|limit| published_count >= limit)
 }
 
 pub fn default_transport_config_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_TRANSPORT_CONFIG_RELATIVE_PATH)
+}
+
+pub fn default_repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+pub fn default_render_config_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_RENDER_CONFIG_RELATIVE_PATH)
+}
+
+pub fn build_preview_settings_payload(settings: &PreviewSettings) -> String {
+    serde_json::json!({
+        "ply_path": settings.ply_path,
+        "focal_length_px": settings.focal_length_px,
+    })
+    .to_string()
+}
+
+pub fn load_preview_settings(
+    config_path: &Path,
+    repo_root: &Path,
+) -> Result<PreviewSettings, DynError> {
+    if !config_path.is_file() {
+        return normalize_preview_settings(
+            PreviewSettings {
+                ply_path: DEFAULT_PREVIEW_PLY_PATH.to_string(),
+                focal_length_px: DEFAULT_PREVIEW_FOCAL_LENGTH_PX,
+            },
+            repo_root,
+        );
+    }
+
+    let text = fs::read_to_string(config_path)?;
+    let root: Value = serde_json::from_str(&text)?;
+    let preview = root
+        .get("preview")
+        .and_then(Value::as_object)
+        .ok_or_else(|| invalid_data_error("render config `preview` must be an object".to_string()))?;
+
+    let ply_path = preview
+        .get("ply_path")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            invalid_data_error("render config `preview.ply_path` must be a non-empty string".to_string())
+        })?;
+    let focal_length_px = preview
+        .get("focal_length_px")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            invalid_data_error("render config `preview.focal_length_px` must be numeric".to_string())
+        })?;
+
+    normalize_preview_settings(
+        PreviewSettings {
+            ply_path: ply_path.to_string(),
+            focal_length_px,
+        },
+        repo_root,
+    )
+}
+
+pub fn save_preview_settings(
+    settings: &PreviewSettings,
+    config_path: &Path,
+    repo_root: &Path,
+) -> Result<(), DynError> {
+    let normalized = normalize_preview_settings(settings.clone(), repo_root)?;
+    let mut root = load_existing_render_config_root(config_path)?;
+    let object = root
+        .as_object_mut()
+        .ok_or_else(|| invalid_data_error("render config must be a JSON object".to_string()))?;
+    let mut preview = object
+        .get("preview")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    preview.insert("ply_path".to_string(), Value::String(normalized.ply_path));
+    preview.insert(
+        "focal_length_px".to_string(),
+        serde_json::Number::from_f64(normalized.focal_length_px)
+            .map(Value::Number)
+            .ok_or_else(|| {
+                invalid_data_error("preview settings `focal_length_px` must be finite".to_string())
+            })?,
+    );
+    object.insert("preview".to_string(), Value::Object(preview));
+
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(config_path, serde_json::to_string_pretty(&root)? + "\n")?;
+    Ok(())
+}
+
+fn load_existing_render_config_root(config_path: &Path) -> Result<Value, DynError> {
+    if !config_path.is_file() {
+        return Ok(Value::Object(serde_json::Map::new()));
+    }
+
+    let text = fs::read_to_string(config_path)?;
+    let root: Value = serde_json::from_str(&text)?;
+    if !root.is_object() {
+        return Err(invalid_data_error("render config must be a JSON object".to_string()).into());
+    }
+
+    Ok(root)
 }
 
 fn load_transport_config(transport_config_path: &Path) -> Result<Value, DynError> {
@@ -519,6 +853,12 @@ pub fn parse_transport_topic_key_exprs(root: &Value) -> Result<TransportTopicKey
     Ok(TransportTopicKeyExprs {
         ui_camera_command: resolve_ui_command_key_expr(ui_topics)?,
         render_camera_request: resolve_render_request_key_expr(render_topics)?,
+        render_preview_settings: resolve_render_request_variant_key_expr(
+            render_topics,
+            "preview_settings_request",
+            DEFAULT_RENDER_PREVIEW_SETTINGS_KEY_EXPR,
+            "preview_settings",
+        )?,
         render_state: resolve_render_state_key_expr(render_topics)?,
         render_frame_metadata: core_topics
             .get("frame_metadata")
@@ -532,6 +872,12 @@ pub fn parse_transport_topic_key_exprs(root: &Value) -> Result<TransportTopicKey
             .filter(|value| !value.is_empty())
             .unwrap_or(DEFAULT_FRAME_PAYLOAD_KEY_EXPR)
             .to_string(),
+        render_preview_camera_state: core_topics
+            .get("preview_camera_state")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(DEFAULT_PREVIEW_CAMERA_STATE_KEY_EXPR)
+            .to_string(),
         ui_preview_metadata: resolve_ui_preview_key_expr(
             ui_topics,
             "preview_metadata",
@@ -543,6 +889,18 @@ pub fn parse_transport_topic_key_exprs(root: &Value) -> Result<TransportTopicKey
             "preview_payload",
             DEFAULT_UI_PREVIEW_PAYLOAD_KEY_EXPR,
             "frame_payload",
+        )?,
+        ui_preview_camera_state: resolve_ui_preview_key_expr(
+            ui_topics,
+            "preview_camera_state",
+            DEFAULT_UI_PREVIEW_CAMERA_STATE_KEY_EXPR,
+            "camera_state",
+        )?,
+        ui_preview_settings: resolve_ui_state_key_expr(
+            ui_topics,
+            "preview_settings_state",
+            DEFAULT_UI_PREVIEW_SETTINGS_KEY_EXPR,
+            "preview_settings",
         )?,
     })
 }
@@ -558,6 +916,35 @@ fn publish_render_camera_request(
         .wait()?;
 
     Ok(())
+}
+
+fn publish_preview_settings(
+    session: &zenoh::Session,
+    topic_key_exprs: &TransportTopicKeyExprs,
+    payload: &str,
+) -> Result<(), DynError> {
+    session
+        .put(topic_key_exprs.render_preview_settings.as_str(), payload.to_string())
+        .encoding(Encoding::APPLICATION_JSON)
+        .wait()?;
+    session
+        .put(topic_key_exprs.ui_preview_settings.as_str(), payload.to_string())
+        .encoding(Encoding::APPLICATION_JSON)
+        .wait()?;
+
+    Ok(())
+}
+
+fn publish_current_preview_settings(
+    session: &zenoh::Session,
+    topic_key_exprs: &TransportTopicKeyExprs,
+    preview_settings: Arc<Mutex<PreviewSettingsStore>>,
+) -> Result<(), DynError> {
+    let payload = preview_settings
+        .lock()
+        .expect("preview settings mutex should not be poisoned")
+        .current_payload();
+    publish_preview_settings(session, topic_key_exprs, payload.as_str())
 }
 
 fn publish_preview_frame(
@@ -583,6 +970,22 @@ fn publish_preview_frame(
     Ok(())
 }
 
+fn publish_preview_camera_state(
+    session: &zenoh::Session,
+    topic_key_exprs: &TransportTopicKeyExprs,
+    payload: &[u8],
+) -> Result<(), DynError> {
+    session
+        .put(
+            topic_key_exprs.ui_preview_camera_state.as_str(),
+            payload.to_vec(),
+        )
+        .encoding(Encoding::APPLICATION_JSON)
+        .wait()?;
+
+    Ok(())
+}
+
 fn serialize_frame_metadata(metadata: &FrameMetadata) -> String {
     serde_json::json!({
         "frame_id": metadata.frame_id,
@@ -593,6 +996,135 @@ fn serialize_frame_metadata(metadata: &FrameMetadata) -> String {
         "pixel_format": metadata.pixel_format,
     })
     .to_string()
+}
+
+fn build_render_camera_request_payload(payload: &[u8]) -> Result<Option<Vec<u8>>, DynError> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|error| invalid_data_error(format!("ui command payload must be valid UTF-8: {error}")))?;
+    let root: Value = serde_json::from_str(text)?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| invalid_data_error("ui command payload must be a JSON object".to_string()))?;
+
+    let mut camera_request = serde_json::Map::new();
+    for field_name in [
+        "pan_x",
+        "pan_y",
+        "pan_z",
+        "yaw_degrees",
+        "pitch_degrees",
+        "offset_x",
+        "offset_y",
+        "offset_z",
+    ] {
+        if let Some(value) = object.get(field_name) {
+            if value.as_f64().is_none() {
+                return Err(invalid_data_error(format!(
+                    "ui command `{field_name}` must be numeric"
+                )));
+            }
+            camera_request.insert(field_name.to_string(), value.clone());
+        }
+    }
+
+    if camera_request.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(serde_json::to_vec(&Value::Object(camera_request))?))
+}
+
+fn parse_preview_settings_update_payload(
+    payload: &[u8],
+    current: &PreviewSettings,
+    repo_root: &Path,
+) -> Result<Option<PreviewSettings>, DynError> {
+    let text = std::str::from_utf8(payload)
+        .map_err(|error| invalid_data_error(format!("ui command payload must be valid UTF-8: {error}")))?;
+    let root: Value = serde_json::from_str(text)?;
+    let object = root
+        .as_object()
+        .ok_or_else(|| invalid_data_error("ui command payload must be a JSON object".to_string()))?;
+
+    let mut has_update = false;
+    let mut next = current.clone();
+
+    if let Some(value) = object.get("ply_path") {
+        let Some(ply_path) = value.as_str() else {
+            return Err(invalid_data_error("ui command `ply_path` must be a string".to_string()));
+        };
+        if ply_path.is_empty() {
+            return Err(invalid_data_error(
+                "ui command `ply_path` must not be empty".to_string(),
+            ));
+        }
+        next.ply_path = ply_path.to_string();
+        has_update = true;
+    }
+
+    if let Some(value) = object.get("focal_length_px") {
+        let Some(focal_length_px) = value.as_f64() else {
+            return Err(invalid_data_error(
+                "ui command `focal_length_px` must be numeric".to_string(),
+            ));
+        };
+        next.focal_length_px = focal_length_px;
+        has_update = true;
+    }
+
+    if !has_update {
+        return Ok(None);
+    }
+
+    Ok(Some(normalize_preview_settings(next, repo_root)?))
+}
+
+fn normalize_preview_settings(
+    settings: PreviewSettings,
+    repo_root: &Path,
+) -> Result<PreviewSettings, DynError> {
+    if !settings.focal_length_px.is_finite() {
+        return Err(invalid_data_error(
+            "preview settings `focal_length_px` must be finite".to_string(),
+        ));
+    }
+    if settings.focal_length_px < MIN_PREVIEW_FOCAL_LENGTH_PX {
+        return Err(invalid_data_error(format!(
+            "preview settings `focal_length_px` must be at least {MIN_PREVIEW_FOCAL_LENGTH_PX}"
+        )));
+    }
+    if settings.ply_path.trim().is_empty() {
+        return Err(invalid_data_error(
+            "preview settings `ply_path` must not be empty".to_string(),
+        ));
+    }
+
+    let resolved_ply_path = resolve_repo_path(settings.ply_path.as_str(), repo_root);
+    if !resolved_ply_path.is_file() {
+        return Err(invalid_data_error(format!(
+            "preview settings `ply_path` was not found: {}",
+            resolved_ply_path.display()
+        )));
+    }
+
+    let normalized_ply_path = resolved_ply_path
+        .strip_prefix(repo_root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| resolved_ply_path.to_string_lossy().into_owned());
+
+    Ok(PreviewSettings {
+        ply_path: normalized_ply_path,
+        focal_length_px: settings.focal_length_px,
+    })
+}
+
+fn resolve_repo_path(path_value: &str, repo_root: &Path) -> PathBuf {
+    let candidate = Path::new(path_value);
+    if candidate.is_absolute() {
+        return candidate.to_path_buf();
+    }
+
+    repo_root.join(candidate)
 }
 
 fn required_u64_field(root: &Value, field_name: &str) -> Result<u64, DynError> {
@@ -655,7 +1187,21 @@ fn resolve_render_state_key_expr(
 fn resolve_render_request_key_expr(
     render_topics: &serde_json::Map<String, Value>,
 ) -> Result<String, DynError> {
-    if let Some(value) = render_topics.get("camera_request").and_then(Value::as_str) {
+    resolve_render_request_variant_key_expr(
+        render_topics,
+        "camera_request",
+        DEFAULT_RENDER_REQUEST_KEY_EXPR,
+        "camera",
+    )
+}
+
+fn resolve_render_request_variant_key_expr(
+    render_topics: &serde_json::Map<String, Value>,
+    exact_field_name: &str,
+    default_key_expr: &str,
+    suffix: &str,
+) -> Result<String, DynError> {
+    if let Some(value) = render_topics.get(exact_field_name).and_then(Value::as_str) {
         if !value.is_empty() {
             return Ok(value.to_string());
         }
@@ -668,19 +1214,17 @@ fn resolve_render_request_key_expr(
         .unwrap_or("simulation/render/request/**");
     if !request_key_expr.ends_with("/**") {
         return Err(invalid_data_error(
-            "transport config `topics.render.camera_request` must be configured when `topics.render.request` is not a wildcard"
-                .to_string(),
+            format!(
+                "transport config `topics.render.{exact_field_name}` must be configured when `topics.render.request` is not a wildcard"
+            ),
         ));
     }
 
     if request_key_expr == "simulation/render/request/**" {
-        return Ok(DEFAULT_RENDER_REQUEST_KEY_EXPR.to_string());
+        return Ok(default_key_expr.to_string());
     }
 
-    Ok(format!(
-        "{}/camera",
-        &request_key_expr[..request_key_expr.len() - 3]
-    ))
+    Ok(format!("{}/{}", &request_key_expr[..request_key_expr.len() - 3], suffix))
 }
 
 fn resolve_ui_preview_key_expr(
@@ -714,6 +1258,41 @@ fn resolve_ui_preview_key_expr(
     Ok(format!(
         "{}/{}",
         &preview_key_expr[..preview_key_expr.len() - 3],
+        suffix
+    ))
+}
+
+fn resolve_ui_state_key_expr(
+    ui_topics: &serde_json::Map<String, Value>,
+    exact_field_name: &str,
+    default_key_expr: &str,
+    suffix: &str,
+) -> Result<String, DynError> {
+    if let Some(value) = ui_topics.get(exact_field_name).and_then(Value::as_str) {
+        if !value.is_empty() {
+            return Ok(value.to_string());
+        }
+    }
+
+    let state_key_expr = ui_topics
+        .get("state")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_UI_STATE_KEY_EXPR);
+    if !state_key_expr.ends_with("/**") {
+        return Err(invalid_data_error(
+            "transport config `topics.ui.state` must be a wildcard when exact UI state topics are omitted"
+                .to_string(),
+        ));
+    }
+
+    if state_key_expr == DEFAULT_UI_STATE_KEY_EXPR {
+        return Ok(default_key_expr.to_string());
+    }
+
+    Ok(format!(
+        "{}/{}",
+        &state_key_expr[..state_key_expr.len() - 3],
         suffix
     ))
 }

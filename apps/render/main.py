@@ -4,12 +4,23 @@ import os
 import signal
 import subprocess
 import sys
+from dataclasses import replace
+from itertools import count
 from pathlib import Path
 from threading import Event, Thread
 from types import FrameType
 from typing import Callable, Protocol, Sequence
 
-from render_worker import CameraOffsetState, RenderWorkerState, RenderedPreviewFrame, render_gaussian_splat_preview_frame, run_render_loop
+import zenoh_worker
+from render_worker import (
+    CameraOffsetState,
+    PreviewCameraState,
+    PreviewRenderResult,
+    RenderWorkerState,
+    RenderedPreviewFrame,
+    render_gaussian_splat_preview_result,
+    run_render_loop,
+)
 from zenoh_worker import ZenohWorker, build_frame_message_from_rgb8_payload
 
 
@@ -21,6 +32,9 @@ class CommandWorker(Protocol):
     def publish_frame(self, frame: object | None = None) -> None:
         """Publish the current frame."""
 
+    def publish_preview_camera_state(self, state: PreviewCameraState) -> None:
+        """Publish the current preview camera state."""
+
     def publish_current_state(self) -> None:
         """Publish the current render worker state."""
 
@@ -29,7 +43,15 @@ class CommandWorker(Protocol):
 
     @property
     def camera_offset(self) -> CameraOffsetState:
-        """Return the latest camera offset request."""
+        """Return the latest preview camera pan/orbit request."""
+
+    @property
+    def preview_ply_path(self) -> Path:
+        """Return the active preview scene asset path."""
+
+    @property
+    def preview_focal_length_px(self) -> float:
+        """Return the active preview focal length in pixels."""
 
     def consume_camera_update(self) -> bool:
         """Return whether a new camera update should trigger re-rendering."""
@@ -70,6 +92,34 @@ def publish_rendered_preview_frame(
     )
 
 
+class PreviewPublicationSequencer:
+    def __init__(self, start_frame_id: int = 1) -> None:
+        self._frame_ids = count(start_frame_id)
+
+    def publish(
+        self,
+        worker: CommandWorker,
+        preview_render: PreviewRenderResult,
+    ) -> None:
+        frame_id = next(self._frame_ids)
+        timestamp = zenoh_worker.build_utc_timestamp()
+        published_camera_state = replace(
+            preview_render.camera_state,
+            frame_id=frame_id,
+            timestamp=timestamp,
+        )
+        worker.publish_frame(
+            build_frame_message_from_rgb8_payload(
+                payload=preview_render.frame.payload,
+                width=preview_render.frame.width,
+                height=preview_render.frame.height,
+                frame_id=frame_id,
+                timestamp=timestamp,
+            )
+        )
+        worker.publish_preview_camera_state(published_camera_state)
+
+
 def run_command_loop(
     stop_event: Event,
     worker: CommandWorker,
@@ -89,6 +139,7 @@ def build_worker_threads(
     stop_event: Event,
     worker: CommandWorker,
 ) -> tuple[Thread, Thread]:
+    preview_publication_sequencer = PreviewPublicationSequencer()
     command_thread = Thread(
         target=run_command_loop,
         name="command-thread",
@@ -102,8 +153,12 @@ def build_worker_threads(
             stop_event,
             worker.update_state,
             None,
-            lambda: render_gaussian_splat_preview_frame(camera_offset=worker.camera_offset),
-            lambda frame: publish_rendered_preview_frame(worker, frame),
+            lambda: render_gaussian_splat_preview_result(
+                ply_path=worker.preview_ply_path,
+                focal_length=worker.preview_focal_length_px,
+                camera_offset=worker.camera_offset,
+            ),
+            lambda preview_render: preview_publication_sequencer.publish(worker, preview_render),
             worker.consume_camera_update,
         ),
         daemon=True,

@@ -18,19 +18,33 @@
     "core": {
       "gaze_vector": "simulation/core/gaze_vector",
       "frame_metadata": "simulation/core/frame_metadata",
-      "frame_payload": "simulation/core/frame_payload"
+      "frame_payload": "simulation/core/frame_payload",
+      "preview_camera_state": "simulation/core/preview_camera_state",
+      "robot_frame_metadata": "simulation/core/robot/frame_metadata",
+      "robot_frame_payload": "simulation/core/robot/frame_payload",
+      "robot_camera_state": "simulation/core/robot/camera_state"
     },
     "ui": {
       "command": "simulation/ui/cmd/**",
       "camera_command": "simulation/ui/cmd/camera",
+      "robot_command": "simulation/ui/cmd/robot",
       "state": "simulation/ui/state/**",
+      "robot_state": "simulation/ui/state/robot",
+      "preview_settings_state": "simulation/ui/state/preview_settings",
       "stats": "simulation/ui/stats/**",
       "preview": "simulation/ui/preview/**",
       "preview_metadata": "simulation/ui/preview/frame_metadata",
-      "preview_payload": "simulation/ui/preview/frame_payload"
+      "preview_payload": "simulation/ui/preview/frame_payload",
+      "preview_camera_state": "simulation/ui/preview/camera_state",
+      "robot": "simulation/ui/robot/**",
+      "robot_metadata": "simulation/ui/robot/frame_metadata",
+      "robot_payload": "simulation/ui/robot/frame_payload",
+      "robot_camera_state": "simulation/ui/robot/camera_state"
     },
     "render": {
       "camera_request": "simulation/render/request/camera",
+      "robot_pose_request": "simulation/render/request/robot_pose",
+      "preview_settings_request": "simulation/render/request/preview_settings",
       "request": "simulation/render/request/**",
       "response": "simulation/render/response/**",
       "state": "simulation/render/response/state"

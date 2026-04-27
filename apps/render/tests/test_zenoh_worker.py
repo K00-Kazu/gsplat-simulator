@@ -53,14 +53,175 @@ def test_publish_current_state_publishes_idle_payload() -> None:
     ]
 
 
-def test_parse_camera_offset_payload_reads_expected_fields() -> None:
-    assert zenoh_worker.parse_camera_offset_payload(
-        '{"offset_x":0.5,"offset_y":0.0,"offset_z":-0.25}'
-    ) == zenoh_worker.CameraOffsetState(
-        offset_x=0.5,
-        offset_y=0.0,
-        offset_z=-0.25,
+def test_publish_current_state_replays_latest_completed_preview() -> None:
+    state_publisher = FakePublisher()
+    metadata_publisher = FakePublisher()
+    payload_publisher = FakePublisher()
+    preview_camera_state_publisher = FakePublisher()
+    session = FakeSession()
+    worker = zenoh_worker.ZenohWorker(
+        state=zenoh_worker.RenderWorkerState(zenoh_worker.RenderLifecycleState.COMPLETED),
+        session=session,
+        publisher=state_publisher,
+        publish_interval_s=1.0,
+        frame_metadata_publisher=metadata_publisher,
+        frame_payload_publisher=payload_publisher,
+        preview_camera_state_publisher=preview_camera_state_publisher,
     )
+    frame = zenoh_worker.build_frame_message(
+        frame_id=5,
+        timestamp="2026-04-23T00:00:00Z",
+        width=2,
+        height=1,
+    )
+    preview_camera_state = zenoh_worker.PreviewCameraState(
+        frame_id=5,
+        timestamp="2026-04-23T00:00:00Z",
+        camera_role="preview",
+        eye=(0.0, -10.0, 4.0),
+        target=(0.0, 0.0, 0.0),
+        up=(0.0, 0.0, 1.0),
+        scene_center=(0.0, 0.0, 0.0),
+        scene_radius=5.0,
+        focal_length_px=900.0,
+        image_width=2,
+        image_height=1,
+        world_up_axis="z",
+        gizmo_enabled=True,
+    )
+
+    worker.publish_frame(frame)
+    worker.publish_preview_camera_state(preview_camera_state)
+
+    state_publisher.calls.clear()
+    metadata_publisher.calls.clear()
+    payload_publisher.calls.clear()
+    preview_camera_state_publisher.calls.clear()
+
+    worker.publish_current_state()
+
+    assert state_publisher.calls == [
+        ('{"state":"Completed"}', zenoh_worker.zenoh.Encoding.APPLICATION_JSON),
+    ]
+    assert metadata_publisher.calls == [
+        (
+            '{"frame_id":5,"timestamp":"2026-04-23T00:00:00Z","width":2,"height":1,"stride":6,"pixel_format":"rgb8"}',
+            zenoh_worker.zenoh.Encoding.APPLICATION_JSON,
+        ),
+    ]
+    assert payload_publisher.calls == [
+        (
+            frame.payload,
+            zenoh_worker.zenoh.Encoding.APPLICATION_OCTET_STREAM,
+        ),
+    ]
+    assert preview_camera_state_publisher.calls == [
+        (
+            zenoh_worker.serialize_preview_camera_state(preview_camera_state),
+            zenoh_worker.zenoh.Encoding.APPLICATION_JSON,
+        ),
+    ]
+
+
+def test_parse_preview_render_command_payload_reads_preview_camera_controls() -> None:
+    command = zenoh_worker.parse_preview_render_command_payload(
+        '{"pan_x":0.5,"pan_y":0.0,"pan_z":-0.25,"yaw_degrees":15.0,"pitch_degrees":-10.0}'
+    )
+
+    assert command.camera_offset == zenoh_worker.CameraOffsetState(
+        pan_x=0.5,
+        pan_y=0.0,
+        pan_z=-0.25,
+        yaw_degrees=15.0,
+        pitch_degrees=-10.0,
+    )
+    assert command.focal_length_px is None
+    assert command.ply_path is None
+
+
+def test_parse_preview_render_command_payload_reads_scene_and_zoom_updates(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    assets_dir = repo_root / "assets"
+    assets_dir.mkdir(parents=True)
+    scene_path = assets_dir / "scene.ply"
+    scene_path.write_bytes(b"ply\n")
+
+    command = zenoh_worker.parse_preview_render_command_payload(
+        (
+            '{"pan_x":0.5,"pan_y":0.0,"pan_z":-0.25,'
+            '"yaw_degrees":15.0,"pitch_degrees":-10.0,'
+            '"focal_length_px":1200.0,"ply_path":"assets/scene.ply"}'
+        ),
+        repo_root=repo_root,
+    )
+
+    assert command.camera_offset == zenoh_worker.CameraOffsetState(
+        pan_x=0.5,
+        pan_y=0.0,
+        pan_z=-0.25,
+        yaw_degrees=15.0,
+        pitch_degrees=-10.0,
+    )
+    assert command.focal_length_px == 1200.0
+    assert command.ply_path == scene_path
+
+
+def test_parse_preview_render_settings_payload_reads_scene_and_zoom_updates(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    assets_dir = repo_root / "assets"
+    assets_dir.mkdir(parents=True)
+    scene_path = assets_dir / "scene.ply"
+    scene_path.write_bytes(b"ply\n")
+
+    config = zenoh_worker.parse_preview_render_settings_payload(
+        '{"focal_length_px":1200.0,"ply_path":"assets/scene.ply"}',
+        repo_root=repo_root,
+    )
+
+    assert config == zenoh_worker.PreviewRenderConfig(
+        ply_path=scene_path,
+        focal_length_px=1200.0,
+    )
+
+
+def test_serialize_preview_camera_state_emits_expected_json() -> None:
+    payload = zenoh_worker.serialize_preview_camera_state(
+        zenoh_worker.PreviewCameraState(
+            frame_id=7,
+            timestamp="2026-04-15T00:00:00Z",
+            camera_role="preview",
+            eye=(0.0, -10.0, 4.0),
+            target=(0.0, 0.0, 0.0),
+            up=(0.0, 0.0, 1.0),
+            scene_center=(0.0, 0.0, 0.0),
+            scene_radius=5.0,
+            focal_length_px=900.0,
+            image_width=1280,
+            image_height=720,
+            world_up_axis="z",
+            gizmo_enabled=True,
+        )
+    )
+
+    assert json.loads(payload) == {
+        "frame_id": 7,
+        "timestamp": "2026-04-15T00:00:00Z",
+        "camera_role": "preview",
+        "eye": [0.0, -10.0, 4.0],
+        "target": [0.0, 0.0, 0.0],
+        "up": [0.0, 0.0, 1.0],
+        "scene_center": [0.0, 0.0, 0.0],
+        "scene_radius": 5.0,
+        "focal_length_px": 900.0,
+        "image_width": 1280,
+        "image_height": 720,
+        "world_up_axis": "z",
+        "gizmo_enabled": True,
+    }
 
 
 def test_update_state_publishes_each_new_lifecycle_once() -> None:
@@ -92,7 +253,7 @@ def test_update_state_publishes_each_new_lifecycle_once() -> None:
     ]
 
 
-def test_apply_camera_offset_marks_update_pending_once_per_distinct_value() -> None:
+def test_apply_preview_render_command_marks_update_pending_once_per_distinct_value() -> None:
     publisher = FakePublisher()
     session = FakeSession()
     worker = zenoh_worker.ZenohWorker(
@@ -102,10 +263,64 @@ def test_apply_camera_offset_marks_update_pending_once_per_distinct_value() -> N
         publish_interval_s=1.0,
     )
 
-    worker.apply_camera_offset(zenoh_worker.CameraOffsetState(offset_x=0.25))
-    worker.apply_camera_offset(zenoh_worker.CameraOffsetState(offset_x=0.25))
+    command = zenoh_worker.PreviewRenderCommand(
+        camera_offset=zenoh_worker.CameraOffsetState(pan_x=0.25)
+    )
+    worker.apply_preview_render_command(command)
+    worker.apply_preview_render_command(command)
 
-    assert worker.camera_offset == zenoh_worker.CameraOffsetState(offset_x=0.25)
+    assert worker.camera_offset == zenoh_worker.CameraOffsetState(pan_x=0.25)
+    assert worker.consume_camera_update() is True
+    assert worker.consume_camera_update() is False
+
+
+def test_apply_preview_render_command_updates_only_camera_offset() -> None:
+    publisher = FakePublisher()
+    session = FakeSession()
+    worker = zenoh_worker.ZenohWorker(
+        state=zenoh_worker.RenderWorkerState(),
+        session=session,
+        publisher=publisher,
+        publish_interval_s=1.0,
+        camera_offset=zenoh_worker.CameraOffsetState(),
+    )
+
+    worker.apply_preview_render_command(
+        zenoh_worker.PreviewRenderCommand(
+            camera_offset=zenoh_worker.CameraOffsetState(pan_x=0.25, yaw_degrees=12.0),
+        )
+    )
+
+    assert worker.camera_offset == zenoh_worker.CameraOffsetState(pan_x=0.25, yaw_degrees=12.0)
+    assert worker.consume_camera_update() is True
+    assert worker.consume_camera_update() is False
+
+
+def test_apply_preview_render_settings_updates_scene_and_zoom() -> None:
+    publisher = FakePublisher()
+    session = FakeSession()
+    initial_scene = Path("/tmp/initial-scene.ply")
+    next_scene = Path("/tmp/next-scene.ply")
+    worker = zenoh_worker.ZenohWorker(
+        state=zenoh_worker.RenderWorkerState(),
+        session=session,
+        publisher=publisher,
+        publish_interval_s=1.0,
+        preview_render_config=zenoh_worker.PreviewRenderConfig(
+            ply_path=initial_scene,
+            focal_length_px=900.0,
+        ),
+    )
+
+    worker.apply_preview_render_settings(
+        zenoh_worker.PreviewRenderConfig(
+            ply_path=next_scene,
+            focal_length_px=1200.0,
+        )
+    )
+
+    assert worker.preview_ply_path == next_scene
+    assert worker.preview_focal_length_px == 1200.0
     assert worker.consume_camera_update() is True
     assert worker.consume_camera_update() is False
 
@@ -142,6 +357,7 @@ def test_publish_frame_publishes_metadata_and_red_payload() -> None:
     state_publisher = FakePublisher()
     metadata_publisher = FakePublisher()
     payload_publisher = FakePublisher()
+    preview_camera_state_publisher = FakePublisher()
     session = FakeSession()
     worker = zenoh_worker.ZenohWorker(
         state=zenoh_worker.RenderWorkerState(),
@@ -150,6 +366,7 @@ def test_publish_frame_publishes_metadata_and_red_payload() -> None:
         publish_interval_s=1.0,
         frame_metadata_publisher=metadata_publisher,
         frame_payload_publisher=payload_publisher,
+        preview_camera_state_publisher=preview_camera_state_publisher,
     )
 
     worker.publish_frame()
@@ -165,6 +382,49 @@ def test_publish_frame_publishes_metadata_and_red_payload() -> None:
         (
             b"\xff\x00\x00" * 8,
             zenoh_worker.zenoh.Encoding.APPLICATION_OCTET_STREAM,
+        ),
+    ]
+    assert preview_camera_state_publisher.calls == []
+
+
+def test_publish_preview_camera_state_publishes_json_payload() -> None:
+    state_publisher = FakePublisher()
+    metadata_publisher = FakePublisher()
+    payload_publisher = FakePublisher()
+    preview_camera_state_publisher = FakePublisher()
+    session = FakeSession()
+    worker = zenoh_worker.ZenohWorker(
+        state=zenoh_worker.RenderWorkerState(),
+        session=session,
+        publisher=state_publisher,
+        publish_interval_s=1.0,
+        frame_metadata_publisher=metadata_publisher,
+        frame_payload_publisher=payload_publisher,
+        preview_camera_state_publisher=preview_camera_state_publisher,
+    )
+
+    worker.publish_preview_camera_state(
+        zenoh_worker.PreviewCameraState(
+            frame_id=3,
+            timestamp="2026-04-15T00:00:00Z",
+            camera_role="preview",
+            eye=(0.0, -10.0, 4.0),
+            target=(0.0, 0.0, 0.0),
+            up=(0.0, 0.0, 1.0),
+            scene_center=(0.0, 0.0, 0.0),
+            scene_radius=5.0,
+            focal_length_px=900.0,
+            image_width=1280,
+            image_height=720,
+            world_up_axis="z",
+            gizmo_enabled=True,
+        )
+    )
+
+    assert preview_camera_state_publisher.calls == [
+        (
+            '{"frame_id":3,"timestamp":"2026-04-15T00:00:00Z","camera_role":"preview","eye":[0.0,-10.0,4.0],"target":[0.0,0.0,0.0],"up":[0.0,0.0,1.0],"scene_center":[0.0,0.0,0.0],"scene_radius":5.0,"focal_length_px":900.0,"image_width":1280,"image_height":720,"world_up_axis":"z","gizmo_enabled":true}',
+            zenoh_worker.zenoh.Encoding.APPLICATION_JSON,
         ),
     ]
 
@@ -213,7 +473,9 @@ def test_create_initializes_idle_state_and_json_publisher(monkeypatch) -> None:
         state="simulation/render/response/state",
         frame_metadata="simulation/core/frame_metadata",
         frame_payload="simulation/core/frame_payload",
+        preview_camera_state="simulation/core/preview_camera_state",
         camera_request="simulation/render/request/camera",
+        preview_settings="simulation/render/request/preview_settings",
     )
 
     def fake_open(config: object) -> FakeSession:
@@ -242,6 +504,8 @@ def test_create_initializes_idle_state_and_json_publisher(monkeypatch) -> None:
 
     assert worker.state == zenoh_worker.RenderWorkerState()
     assert worker.publish_interval_s == 0.25
+    assert worker.preview_ply_path == zenoh_worker.PreviewRenderConfig().ply_path
+    assert worker.preview_focal_length_px == zenoh_worker.PreviewRenderConfig().focal_length_px
     assert session.declare_calls == [
         (
             topic_key_exprs.state,
@@ -255,6 +519,10 @@ def test_create_initializes_idle_state_and_json_publisher(monkeypatch) -> None:
             topic_key_exprs.frame_payload,
             zenoh_worker.zenoh.Encoding.APPLICATION_OCTET_STREAM,
         ),
+        (
+            topic_key_exprs.preview_camera_state,
+            zenoh_worker.zenoh.Encoding.APPLICATION_JSON,
+        ),
     ]
     assert captured_config_paths == [
         zenoh_worker.DEFAULT_TRANSPORT_CONFIG_PATH,
@@ -263,6 +531,7 @@ def test_create_initializes_idle_state_and_json_publisher(monkeypatch) -> None:
     ]
     assert session.declare_subscriber_calls == [
         topic_key_exprs.camera_request,
+        topic_key_exprs.preview_settings,
     ]
 
 
@@ -285,10 +554,12 @@ def test_load_topic_key_exprs_reads_transport_topics(tmp_path: Path) -> None:
                     "core": {
                         "frame_metadata": "simulation/core/frame_metadata",
                         "frame_payload": "simulation/core/frame_payload",
+                        "preview_camera_state": "simulation/core/preview_camera_state",
                     },
                     "render": {
                         "request": "simulation/render/request/**",
                         "camera_request": "simulation/render/request/camera",
+                        "preview_settings_request": "simulation/render/request/preview_settings",
                         "response": "simulation/render/response/**",
                         "state": "simulation/render/response/state",
                     },
@@ -305,5 +576,7 @@ def test_load_topic_key_exprs_reads_transport_topics(tmp_path: Path) -> None:
         state="simulation/render/response/state",
         frame_metadata="simulation/core/frame_metadata",
         frame_payload="simulation/core/frame_payload",
+        preview_camera_state="simulation/core/preview_camera_state",
         camera_request="simulation/render/request/camera",
+        preview_settings="simulation/render/request/preview_settings",
     )

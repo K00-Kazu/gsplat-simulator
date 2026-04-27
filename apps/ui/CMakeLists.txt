@@ -196,6 +196,8 @@ qt_add_executable(gsplat_ui
     src/main.cpp
     src/main_window.cpp
     src/main_window.h
+    src/preview_viewport_widget.cpp
+    src/preview_viewport_widget.h
     src/render_worker.cpp
     src/render_worker.h
     src/zenoh_smoke_test.cpp
@@ -227,6 +229,8 @@ if(BUILD_TESTING)
         tests/main_window_test.cpp
         src/main_window.cpp
         src/main_window.h
+        src/preview_viewport_widget.cpp
+        src/preview_viewport_widget.h
         src/render_worker.cpp
         src/render_worker.h
         src/zenoh_smoke_test.cpp

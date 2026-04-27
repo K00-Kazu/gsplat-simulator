@@ -3,18 +3,28 @@
 mod zenoh;
 
 use zenoh::FrameMetadata;
+use zenoh::PreviewSettings;
 use zenoh::PreviewFrameRouter;
 use zenoh::TransportTopicKeyExprs;
+use zenoh::build_preview_settings_payload;
 use zenoh::build_render_camera_request_debug_line;
+use zenoh::build_render_preview_camera_state_debug_line;
 use zenoh::build_render_frame_metadata_debug_line;
 use zenoh::build_render_frame_payload_debug_line;
 use zenoh::build_render_state_debug_line;
 use zenoh::build_ui_camera_command_debug_line;
+use zenoh::build_ui_preview_camera_state_debug_line;
 use zenoh::build_ui_preview_frame_metadata_debug_line;
 use zenoh::build_ui_preview_frame_payload_debug_line;
+use zenoh::default_render_config_path;
+use zenoh::load_preview_settings;
 use zenoh::parse_frame_metadata_payload;
 use zenoh::parse_transport_topic_key_exprs;
+use zenoh::save_preview_settings;
 use zenoh::{build_payload, default_transport_config_path, reached_publish_limit};
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn build_payload_formats_gaze_vector_as_json_array() {
@@ -55,6 +65,17 @@ fn build_render_camera_request_debug_line_includes_payload_text() {
             br#"{"offset_x":0.2,"offset_y":0.0,"offset_z":0.0}"#,
         ),
         r#"[render-camera-request] key_expr=simulation/render/request/camera payload={"offset_x":0.2,"offset_y":0.0,"offset_z":0.0}"#,
+    );
+}
+
+#[test]
+fn build_render_preview_camera_state_debug_line_includes_payload_text() {
+    assert_eq!(
+        build_render_preview_camera_state_debug_line(
+            "simulation/core/preview_camera_state",
+            br#"{"frame_id":1,"camera_role":"preview"}"#,
+        ),
+        r#"[render-preview-camera-state-ipc] key_expr=simulation/core/preview_camera_state payload={"frame_id":1,"camera_role":"preview"}"#,
     );
 }
 
@@ -129,11 +150,13 @@ fn parse_transport_topic_key_exprs_reads_explicit_preview_topics() {
         "topics": {
             "core": {
                 "frame_metadata": "simulation/core/frame_metadata",
-                "frame_payload": "simulation/core/frame_payload"
+                "frame_payload": "simulation/core/frame_payload",
+                "preview_camera_state": "simulation/core/preview_camera_state"
             },
             "render": {
                 "request": "simulation/render/request/**",
                 "camera_request": "simulation/render/request/camera",
+                "preview_settings_request": "simulation/render/request/preview_settings",
                 "response": "simulation/render/response/**",
                 "state": "simulation/render/response/state"
             },
@@ -141,8 +164,11 @@ fn parse_transport_topic_key_exprs_reads_explicit_preview_topics() {
                 "command": "simulation/ui/cmd/**",
                 "camera_command": "simulation/ui/cmd/camera",
                 "preview": "simulation/ui/preview/**",
+                "state": "simulation/ui/state/**",
                 "preview_metadata": "simulation/ui/preview/frame_metadata",
-                "preview_payload": "simulation/ui/preview/frame_payload"
+                "preview_payload": "simulation/ui/preview/frame_payload",
+                "preview_camera_state": "simulation/ui/preview/camera_state",
+                "preview_settings_state": "simulation/ui/state/preview_settings"
             }
         }
     });
@@ -154,11 +180,15 @@ fn parse_transport_topic_key_exprs_reads_explicit_preview_topics() {
         TransportTopicKeyExprs {
             ui_camera_command: "simulation/ui/cmd/camera".to_string(),
             render_camera_request: "simulation/render/request/camera".to_string(),
+            render_preview_settings: "simulation/render/request/preview_settings".to_string(),
             render_state: "simulation/render/response/state".to_string(),
             render_frame_metadata: "simulation/core/frame_metadata".to_string(),
             render_frame_payload: "simulation/core/frame_payload".to_string(),
+            render_preview_camera_state: "simulation/core/preview_camera_state".to_string(),
             ui_preview_metadata: "simulation/ui/preview/frame_metadata".to_string(),
             ui_preview_payload: "simulation/ui/preview/frame_payload".to_string(),
+            ui_preview_camera_state: "simulation/ui/preview/camera_state".to_string(),
+            ui_preview_settings: "simulation/ui/state/preview_settings".to_string(),
         }
     );
 }
@@ -177,7 +207,8 @@ fn parse_transport_topic_key_exprs_can_derive_preview_topics_from_wildcard() {
             },
             "ui": {
                 "command": "simulation/ui/cmd/**",
-                "preview": "simulation/ui/preview/**"
+                "preview": "simulation/ui/preview/**",
+                "state": "simulation/ui/state/**"
             }
         }
     });
@@ -189,7 +220,15 @@ fn parse_transport_topic_key_exprs_can_derive_preview_topics_from_wildcard() {
         key_exprs.render_camera_request,
         "simulation/render/request/camera"
     );
+    assert_eq!(
+        key_exprs.render_preview_settings,
+        "simulation/render/request/preview_settings"
+    );
     assert_eq!(key_exprs.render_state, "simulation/render/response/state");
+    assert_eq!(
+        key_exprs.render_preview_camera_state,
+        "simulation/core/preview_camera_state"
+    );
     assert_eq!(
         key_exprs.ui_preview_metadata,
         "simulation/ui/preview/frame_metadata"
@@ -197,6 +236,168 @@ fn parse_transport_topic_key_exprs_can_derive_preview_topics_from_wildcard() {
     assert_eq!(
         key_exprs.ui_preview_payload,
         "simulation/ui/preview/frame_payload"
+    );
+    assert_eq!(
+        key_exprs.ui_preview_camera_state,
+        "simulation/ui/preview/camera_state"
+    );
+    assert_eq!(
+        key_exprs.ui_preview_settings,
+        "simulation/ui/state/preview_settings"
+    );
+}
+
+fn unique_test_dir(name: &str) -> PathBuf {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("gsplat-core-{name}-{suffix}"));
+    fs::create_dir_all(&path).expect("temp test dir should be created");
+    path
+}
+
+#[test]
+fn default_render_config_path_points_to_shared_preview_config_file() {
+    let path = default_render_config_path();
+
+    assert!(path.ends_with("config/render.dev.json"));
+}
+
+#[test]
+fn build_preview_settings_payload_serializes_scene_and_zoom() {
+    let payload = build_preview_settings_payload(&PreviewSettings {
+        ply_path: "assets/scene.ply".to_string(),
+        focal_length_px: 1234.0,
+    });
+
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&payload).expect("payload should parse"),
+        serde_json::json!({
+            "ply_path": "assets/scene.ply",
+            "focal_length_px": 1234.0,
+        })
+    );
+}
+
+#[test]
+fn load_preview_settings_reads_repo_relative_path_and_focal_length() {
+    let repo_root = unique_test_dir("load-preview-settings");
+    let assets_dir = repo_root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir should be created");
+    fs::write(assets_dir.join("scene.ply"), "ply\n").expect("scene should be written");
+
+    let config_dir = repo_root.join("config");
+    fs::create_dir_all(&config_dir).expect("config dir should be created");
+    let config_path = config_dir.join("render.dev.json");
+    fs::write(
+        &config_path,
+        r#"{"preview":{"ply_path":"assets/scene.ply","focal_length_px":1234.0}}"#,
+    )
+    .expect("render config should be written");
+
+    let settings = load_preview_settings(&config_path, &repo_root).expect("settings should load");
+
+    assert_eq!(
+        settings,
+        PreviewSettings {
+            ply_path: "assets/scene.ply".to_string(),
+            focal_length_px: 1234.0,
+        }
+    );
+}
+
+#[test]
+fn save_preview_settings_writes_repo_relative_ply_path() {
+    let repo_root = unique_test_dir("save-preview-settings");
+    let assets_dir = repo_root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir should be created");
+    let scene_path = assets_dir.join("scene.ply");
+    fs::write(&scene_path, "ply\n").expect("scene should be written");
+
+    let config_path = repo_root.join("config").join("render.dev.json");
+    save_preview_settings(
+        &PreviewSettings {
+            ply_path: scene_path.to_string_lossy().into_owned(),
+            focal_length_px: 1111.0,
+        },
+        &config_path,
+        &repo_root,
+    )
+    .expect("settings should save");
+
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &fs::read_to_string(config_path).expect("config should be readable")
+        )
+        .expect("config should parse"),
+        serde_json::json!({
+            "preview": {
+                "ply_path": "assets/scene.ply",
+                "focal_length_px": 1111.0,
+            }
+        })
+    );
+}
+
+#[test]
+fn save_preview_settings_preserves_unknown_sections() {
+    let repo_root = unique_test_dir("save-preview-settings-preserves-sections");
+    let assets_dir = repo_root.join("assets");
+    fs::create_dir_all(&assets_dir).expect("assets dir should be created");
+    let scene_path = assets_dir.join("scene.ply");
+    fs::write(&scene_path, "ply\n").expect("scene should be written");
+
+    let config_dir = repo_root.join("config");
+    fs::create_dir_all(&config_dir).expect("config dir should be created");
+    let config_path = config_dir.join("render.dev.json");
+    fs::write(
+        &config_path,
+        serde_json::json!({
+            "preview": {
+                "ply_path": "assets/old_scene.ply",
+                "focal_length_px": 900.0,
+                "width": 1280,
+            },
+            "robots": [
+                {
+                    "id": "robot_01",
+                    "cameras": [{"id": "front_left"}],
+                }
+            ],
+        })
+        .to_string(),
+    )
+    .expect("existing render config should be written");
+
+    save_preview_settings(
+        &PreviewSettings {
+            ply_path: scene_path.to_string_lossy().into_owned(),
+            focal_length_px: 1111.0,
+        },
+        &config_path,
+        &repo_root,
+    )
+    .expect("settings should save");
+
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &fs::read_to_string(config_path).expect("config should be readable")
+        )
+        .expect("config should parse"),
+        serde_json::json!({
+            "preview": {
+                "ply_path": "assets/scene.ply",
+                "focal_length_px": 1111.0,
+                "width": 1280,
+            },
+            "robots": [
+                {
+                    "id": "robot_01",
+                    "cameras": [{"id": "front_left"}],
+                }
+            ],
+        })
     );
 }
 
@@ -221,6 +422,31 @@ fn preview_frame_router_pairs_payload_with_latest_metadata() {
     let route = router
         .build_preview_route(&payload)
         .expect("payload should route once metadata exists");
+
+    assert_eq!(route.metadata, metadata);
+    assert_eq!(route.payload, payload);
+}
+
+#[test]
+fn preview_frame_router_buffers_payload_until_metadata_arrives() {
+    let metadata = FrameMetadata {
+        frame_id: 7,
+        timestamp: "2026-04-23T00:00:00Z".to_string(),
+        width: 4,
+        height: 2,
+        stride: 12,
+        pixel_format: "rgb8".to_string(),
+    };
+    let payload = vec![
+        0xff, 0x00, 0x00, 0xff, 0x00, 0x00, 0xff, 0x00, 0x00, 0xff, 0x00, 0x00,
+    ];
+    let mut router = PreviewFrameRouter::default();
+
+    assert!(router.build_preview_route(&payload).is_none());
+
+    let route = router
+        .store_frame_metadata(metadata.clone())
+        .expect("metadata should pair with the buffered payload");
 
     assert_eq!(route.metadata, metadata);
     assert_eq!(route.payload, payload);
@@ -255,5 +481,16 @@ fn build_ui_preview_frame_payload_debug_line_includes_size_and_preview() {
     assert_eq!(
         build_ui_preview_frame_payload_debug_line("simulation/ui/preview/frame_payload", &payload,),
         "[ui-preview-payload] key_expr=simulation/ui/preview/frame_payload bytes=12 preview=ff0000ff0000ff0000ff0000",
+    );
+}
+
+#[test]
+fn build_ui_preview_camera_state_debug_line_includes_payload_text() {
+    assert_eq!(
+        build_ui_preview_camera_state_debug_line(
+            "simulation/ui/preview/camera_state",
+            br#"{"frame_id":1,"camera_role":"preview"}"#,
+        ),
+        r#"[ui-preview-camera-state] key_expr=simulation/ui/preview/camera_state payload={"frame_id":1,"camera_role":"preview"}"#,
     );
 }

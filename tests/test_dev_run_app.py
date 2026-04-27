@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -76,6 +77,121 @@ class DevRunAppTest(unittest.TestCase):
             ("render", "echo 'Press Enter to start RenderWorker'", True),
             manager.send_key_calls,
         )
+
+    def test_build_runs_expected_commands_without_tmux(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            render_dir = tmp_path / "apps/render"
+            render_dir.mkdir(parents=True, exist_ok=True)
+            (render_dir / "requirements.txt").write_text("numpy<2.0.0\n", encoding="utf-8")
+
+            original_path = Path
+            commands: list[tuple[list[str], str | None, bool]] = []
+
+            def fake_path(value: str | Path) -> Path:
+                resolved = original_path(value)
+                try:
+                    relative = resolved.relative_to("/workspace")
+                except ValueError:
+                    return resolved
+                return tmp_path / relative
+
+            def fake_run(command, cwd=None, check=False, **kwargs):
+                normalized_command = [str(part) for part in command]
+                commands.append((normalized_command, str(cwd) if cwd is not None else None, check))
+
+                if normalized_command[:3] == [dev_run_app.sys.executable, "-m", "venv"]:
+                    venv_python = tmp_path / "apps/render/.venv/bin/python"
+                    venv_python.parent.mkdir(parents=True, exist_ok=True)
+                    venv_python.write_text("", encoding="utf-8")
+
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(dev_run_app, "Path", new=fake_path), \
+                patch.object(dev_run_app, "TmuxSessionManager", side_effect=AssertionError("tmux should not be used for build")), \
+                patch.object(dev_run_app.subprocess, "run", side_effect=fake_run), \
+                patch.object(dev_run_app.sys, "argv", ["dev_run_app.py", "build"]):
+                result = dev_run_app.main()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(
+            commands,
+            [
+                ([dev_run_app.sys.executable, "-m", "venv", ".venv"], str(tmp_path / "apps/render"), True),
+                ([str(tmp_path / "apps/render/.venv/bin/python"), "-m", "pip", "install", "--upgrade", "pip"], str(tmp_path / "apps/render"), True),
+                ([str(tmp_path / "apps/render/.venv/bin/python"), "-m", "pip", "install", "-r", "requirements.txt"], str(tmp_path / "apps/render"), True),
+                (["cargo", "build", "--release"], str(tmp_path), True),
+                (["cmake", "--preset", "ui-linux-release"], str(tmp_path), True),
+                (["cmake", "--build", "--preset", "ui-linux-release"], str(tmp_path), True),
+            ],
+        )
+
+    def test_build_skips_venv_creation_when_python_already_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            render_dir = tmp_path / "apps/render"
+            render_dir.mkdir(parents=True, exist_ok=True)
+            (render_dir / "requirements.txt").write_text("numpy<2.0.0\n", encoding="utf-8")
+            venv_python = tmp_path / "apps/render/.venv/bin/python"
+            venv_python.parent.mkdir(parents=True, exist_ok=True)
+            venv_python.write_text("", encoding="utf-8")
+
+            original_path = Path
+            commands: list[list[str]] = []
+
+            def fake_path(value: str | Path) -> Path:
+                resolved = original_path(value)
+                try:
+                    relative = resolved.relative_to("/workspace")
+                except ValueError:
+                    return resolved
+                return tmp_path / relative
+
+            def fake_run(command, cwd=None, check=False, **kwargs):
+                commands.append([str(part) for part in command])
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(dev_run_app, "Path", new=fake_path), \
+                patch.object(dev_run_app.subprocess, "run", side_effect=fake_run), \
+                patch.object(dev_run_app.sys, "argv", ["dev_run_app.py", "build"]):
+                result = dev_run_app.main()
+
+        self.assertEqual(result, 0)
+        self.assertNotIn([dev_run_app.sys.executable, "-m", "venv", ".venv"], commands)
+
+    def test_build_returns_nonzero_when_a_step_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tmp_path = Path(temp_dir)
+            render_dir = tmp_path / "apps/render"
+            render_dir.mkdir(parents=True, exist_ok=True)
+            (render_dir / "requirements.txt").write_text("numpy<2.0.0\n", encoding="utf-8")
+
+            original_path = Path
+
+            def fake_path(value: str | Path) -> Path:
+                resolved = original_path(value)
+                try:
+                    relative = resolved.relative_to("/workspace")
+                except ValueError:
+                    return resolved
+                return tmp_path / relative
+
+            def fake_run(command, cwd=None, check=False, **kwargs):
+                normalized_command = [str(part) for part in command]
+                if normalized_command[:3] == [dev_run_app.sys.executable, "-m", "venv"]:
+                    venv_python = tmp_path / "apps/render/.venv/bin/python"
+                    venv_python.parent.mkdir(parents=True, exist_ok=True)
+                    venv_python.write_text("", encoding="utf-8")
+                if normalized_command == ["cargo", "build", "--release"]:
+                    raise subprocess.CalledProcessError(2, command)
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(dev_run_app, "Path", new=fake_path), \
+                patch.object(dev_run_app.subprocess, "run", side_effect=fake_run), \
+                patch.object(dev_run_app.sys, "argv", ["dev_run_app.py", "build"]):
+                result = dev_run_app.main()
+
+        self.assertEqual(result, 2)
 
 
 if __name__ == "__main__":

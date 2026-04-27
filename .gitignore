@@ -15,3 +15,5 @@ __pycache__/
 
 third_party/zenoh/windows/zenohc/
 third_party/zenoh/windows/zenohcxx/
+
+assets/*.ply

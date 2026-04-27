@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -358,6 +359,168 @@ def test_load_gaussian_splat_model_can_limit_vertices_for_large_assets() -> None
     assert model.means.device.type == "cpu"
 
 
+def test_load_preview_render_config_reads_repo_relative_ply_path_and_focal_length(
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    assets_dir = repo_root / "assets"
+    assets_dir.mkdir(parents=True)
+    config_dir = repo_root / "config"
+    config_dir.mkdir(parents=True)
+    ply_path = assets_dir / "scene.ply"
+    vertices = np.array(
+        [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
+        dtype=[
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("scale_0", "f4"),
+            ("scale_1", "f4"),
+            ("scale_2", "f4"),
+            ("rot_0", "f4"),
+            ("rot_1", "f4"),
+            ("rot_2", "f4"),
+            ("rot_3", "f4"),
+            ("opacity", "f4"),
+            ("f_dc_0", "f4"),
+            ("f_dc_1", "f4"),
+            ("f_dc_2", "f4"),
+        ],
+    )
+    write_vertex_ply(ply_path, vertices)
+    config_path = config_dir / "render.dev.json"
+    config_path.write_text(
+        '{"preview":{"ply_path":"assets/scene.ply","focal_length_px":1234.0}}',
+        encoding="utf-8",
+    )
+
+    config = render_worker.load_preview_render_config(
+        config_path=config_path,
+        repo_root=repo_root,
+    )
+
+    assert config.ply_path == ply_path
+    assert config.focal_length_px == 1234.0
+
+
+def test_save_preview_render_config_writes_repo_relative_ply_path(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    assets_dir = repo_root / "assets"
+    assets_dir.mkdir(parents=True)
+    config_dir = repo_root / "config"
+    config_dir.mkdir(parents=True)
+    ply_path = assets_dir / "scene.ply"
+    vertices = np.array(
+        [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
+        dtype=[
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("scale_0", "f4"),
+            ("scale_1", "f4"),
+            ("scale_2", "f4"),
+            ("rot_0", "f4"),
+            ("rot_1", "f4"),
+            ("rot_2", "f4"),
+            ("rot_3", "f4"),
+            ("opacity", "f4"),
+            ("f_dc_0", "f4"),
+            ("f_dc_1", "f4"),
+            ("f_dc_2", "f4"),
+        ],
+    )
+    write_vertex_ply(ply_path, vertices)
+    config_path = config_dir / "render.dev.json"
+
+    render_worker.save_preview_render_config(
+        render_worker.PreviewRenderConfig(
+            ply_path=ply_path,
+            focal_length_px=1111.0,
+        ),
+        config_path=config_path,
+        repo_root=repo_root,
+    )
+
+    assert config_path.read_text(encoding="utf-8") == (
+        '{\n'
+        '  "preview": {\n'
+        '    "ply_path": "assets/scene.ply",\n'
+        '    "focal_length_px": 1111.0\n'
+        "  }\n"
+        "}\n"
+    )
+
+
+def test_save_preview_render_config_preserves_unknown_sections(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    assets_dir = repo_root / "assets"
+    assets_dir.mkdir(parents=True)
+    config_dir = repo_root / "config"
+    config_dir.mkdir(parents=True)
+    ply_path = assets_dir / "scene.ply"
+    vertices = np.array(
+        [(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)],
+        dtype=[
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("scale_0", "f4"),
+            ("scale_1", "f4"),
+            ("scale_2", "f4"),
+            ("rot_0", "f4"),
+            ("rot_1", "f4"),
+            ("rot_2", "f4"),
+            ("rot_3", "f4"),
+            ("opacity", "f4"),
+            ("f_dc_0", "f4"),
+            ("f_dc_1", "f4"),
+            ("f_dc_2", "f4"),
+        ],
+    )
+    write_vertex_ply(ply_path, vertices)
+    config_path = config_dir / "render.dev.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "preview": {
+                    "ply_path": "assets/old_scene.ply",
+                    "focal_length_px": 900.0,
+                    "width": 1280,
+                },
+                "robots": [
+                    {
+                        "id": "robot_01",
+                        "cameras": [{"id": "front_left"}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    render_worker.save_preview_render_config(
+        render_worker.PreviewRenderConfig(
+            ply_path=ply_path,
+            focal_length_px=1111.0,
+        ),
+        config_path=config_path,
+        repo_root=repo_root,
+    )
+
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["preview"] == {
+        "ply_path": "assets/scene.ply",
+        "focal_length_px": 1111.0,
+        "width": 1280,
+    }
+    assert saved["robots"] == [
+        {
+            "id": "robot_01",
+            "cameras": [{"id": "front_left"}],
+        }
+    ]
+
+
 def test_build_preview_intrinsics_uses_image_center_as_principal_point() -> None:
     intrinsics = render_worker.build_preview_intrinsics(
         width=640,
@@ -402,7 +565,7 @@ def test_build_rendered_preview_frame_uses_rgb8_image_dimensions() -> None:
     )
 
 
-def test_build_preview_view_matrix_applies_camera_offset_in_radius_units() -> None:
+def test_build_preview_view_matrix_applies_pan_and_orbit_controls() -> None:
     means = torch.tensor(
         [
             [0.0, 0.0, 0.0],
@@ -415,12 +578,83 @@ def test_build_preview_view_matrix_applies_camera_offset_in_radius_units() -> No
     with_offset = render_worker.build_preview_view_matrix(
         means,
         device="cpu",
-        camera_offset=render_worker.CameraOffsetState(offset_x=0.5, offset_z=0.25),
+        camera_offset=render_worker.CameraOffsetState(
+            pan_x=0.5,
+            pan_z=0.25,
+            yaw_degrees=20.0,
+            pitch_degrees=15.0,
+        ),
     )
 
     assert without_offset.shape == (1, 4, 4)
     assert with_offset.shape == (1, 4, 4)
     assert not torch.equal(without_offset, with_offset)
+
+
+def test_build_preview_camera_state_reports_pan_and_orbit_vectors() -> None:
+    means = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    state = render_worker.build_preview_camera_state(
+        means,
+        width=640,
+        height=360,
+        focal_length=500.0,
+        device="cpu",
+        camera_offset=render_worker.CameraOffsetState(
+            pan_x=0.5,
+            pan_z=0.25,
+            yaw_degrees=20.0,
+            pitch_degrees=15.0,
+        ),
+    )
+
+    assert state.frame_id == -1
+    assert state.timestamp == ""
+    assert state.camera_role == "preview"
+    assert state.target != (1.0, 0.0, 0.0)
+    assert state.scene_center == (1.0, 0.0, 0.0)
+    assert state.scene_radius > 0.0
+    assert state.eye != state.target
+    assert state.up != (0.0, 0.0, 1.0)
+    assert state.focal_length_px == 500.0
+    assert state.image_width == 640
+    assert state.image_height == 360
+    assert state.world_up_axis == "z"
+    assert state.gizmo_enabled is True
+
+
+def test_build_preview_camera_state_pan_moves_target_with_scene_center_offset() -> None:
+    means = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    neutral_state = render_worker.build_preview_camera_state(
+        means,
+        device="cpu",
+    )
+    panned_state = render_worker.build_preview_camera_state(
+        means,
+        device="cpu",
+        camera_offset=render_worker.CameraOffsetState(
+            pan_x=0.5,
+            pan_z=0.25,
+        ),
+    )
+
+    assert neutral_state.scene_center == (1.0, 0.0, 0.0)
+    assert panned_state.scene_center == neutral_state.scene_center
+    assert panned_state.target != neutral_state.target
+    assert panned_state.eye != neutral_state.eye
 
 
 def test_render_gaussian_splat_preview_saves_png_with_stubbed_rasterization(

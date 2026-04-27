@@ -11,12 +11,36 @@ import time
 from pathlib import Path
 
 
+UI_BUILD_PRESET = "ui-linux-release"
+
+
+def workspace_root() -> Path:
+    return Path("/workspace")
+
+
+def render_app_dir(root: Path | None = None) -> Path:
+    resolved_root = workspace_root() if root is None else root
+    return resolved_root / "apps/render"
+
+
+def render_venv_dir(root: Path | None = None) -> Path:
+    return render_app_dir(root) / ".venv"
+
+
+def render_venv_python(root: Path | None = None) -> Path:
+    return render_venv_dir(root) / "bin/python"
+
+
+def render_requirements_path(root: Path | None = None) -> Path:
+    return render_app_dir(root) / "requirements.txt"
+
+
 class TmuxSessionManager:
     """Manage tmux sessions for development"""
 
     def __init__(self, session_name="gsplat-dev"):
         self.session_name = session_name
-        self.workspace_root = Path("/workspace")
+        self.workspace_root = workspace_root()
 
     def check_tmux_installed(self):
         """Check if tmux is installed"""
@@ -82,7 +106,7 @@ class TmuxSessionManager:
 
 def check_prerequisites():
     """Check if all required components are built"""
-    workspace = Path("/workspace")
+    workspace = workspace_root()
     errors = []
     warnings = []
 
@@ -145,12 +169,49 @@ def check_prerequisites():
     return True
 
 
+def run_build_step(command, cwd: Path) -> None:
+    """Run a build command and fail fast on errors."""
+    print(f"Running build step: {' '.join(str(part) for part in command)}")
+    subprocess.run(command, cwd=str(cwd), check=True)
+
+
+def build_components() -> int:
+    """Build the RenderWorker environment, Simulation Core, and UI."""
+    root = workspace_root()
+    render_dir = render_app_dir(root)
+    venv_python = render_venv_python(root)
+    requirements_path = render_requirements_path(root)
+
+    try:
+        if not venv_python.exists():
+            run_build_step([sys.executable, "-m", "venv", ".venv"], render_dir)
+
+        run_build_step(
+            [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"],
+            render_dir,
+        )
+        run_build_step(
+            [str(venv_python), "-m", "pip", "install", "-r", requirements_path.name],
+            render_dir,
+        )
+        run_build_step(["cargo", "build", "--release"], root)
+        run_build_step(["cmake", "--preset", UI_BUILD_PRESET], root)
+        run_build_step(["cmake", "--build", "--preset", UI_BUILD_PRESET], root)
+    except subprocess.CalledProcessError as error:
+        print(f"Build failed while running: {' '.join(str(part) for part in error.cmd)}")
+        return error.returncode or 1
+
+    print("Build completed successfully.")
+    return 0
+
+
 def main():
     """Main entry point"""
     parser_help = """
     Usage: python dev_run_app.py [options]
 
     Options:
+      build    - Build RenderWorker deps, Simulation Core, and UI
       start    - Start all components in tmux (default)
       stop     - Stop (kill) the tmux session
       attach   - Attach to existing session
@@ -158,6 +219,9 @@ def main():
     """
 
     action = sys.argv[1] if len(sys.argv) > 1 else "start"
+
+    if action == "build":
+        return build_components()
 
     manager = TmuxSessionManager()
 
@@ -208,7 +272,7 @@ def main():
         print("Setting up UI window...")
 
         # Find UI binary
-        workspace = Path("/workspace")
+        workspace = workspace_root()
         ui_binary_candidates = [
             workspace / "build/ui/apps/ui/gsplat_ui",
             workspace / "build/ui/gsplat_ui",
@@ -249,7 +313,7 @@ def main():
         manager.send_keys("core", "cd /workspace")
 
         # Find Rust executable
-        rust_binaries = list(Path("/workspace/target/release").glob("*"))
+        rust_binaries = list((workspace_root() / "target/release").glob("*"))
         rust_executables = [
             b for b in rust_binaries
             if b.is_file() and os.access(b, os.X_OK) and not b.suffix and b.name not in ["build", "deps", "examples", "incremental"]
