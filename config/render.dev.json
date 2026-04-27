@@ -1,0 +1,187 @@
+{
+  "preview": {
+    "focal_length_px": 3000.0,
+    "image_height": 720,
+    "image_width": 1280,
+    "ply_path": "/workspace/assets/sample_point_cloud.ply"
+  },
+  "robots": [
+    {
+      "body": {
+        "color_rgba": [
+          0.18,
+          0.64,
+          0.87,
+          0.9
+        ],
+        "shape": "box",
+        "size_m": [
+          0.6,
+          0.4,
+          0.3
+        ]
+      },
+      "cameras": [
+        {
+          "enabled": true,
+          "id": "front_left",
+          "mount_pose": {
+            "position_m": [
+              0.24,
+              0.16,
+              0.18
+            ],
+            "yaw_pitch_roll_deg": [
+              0.0,
+              0.0,
+              35.0
+            ]
+          },
+          "panel_slot": 0,
+          "projection": {
+            "calibration_model": "opencv_fisheye",
+            "camera_model": "fisheye",
+            "distortion": {
+              "k1": 0.0,
+              "k2": 0.0,
+              "k3": 0.0,
+              "k4": 0.0
+            },
+            "image_height": 640,
+            "image_width": 640,
+            "intrinsics": {
+              "cx": 320.0,
+              "cy": 320.0,
+              "fx": 320.0,
+              "fy": 320.0,
+              "skew": 0.0
+            }
+          }
+        },
+        {
+          "enabled": true,
+          "id": "front_right",
+          "mount_pose": {
+            "position_m": [
+              0.24,
+              -0.16,
+              0.18
+            ],
+            "yaw_pitch_roll_deg": [
+              0.0,
+              0.0,
+              -35.0
+            ]
+          },
+          "panel_slot": 1,
+          "projection": {
+            "calibration_model": "opencv_fisheye",
+            "camera_model": "fisheye",
+            "distortion": {
+              "k1": 0.0,
+              "k2": 0.0,
+              "k3": 0.0,
+              "k4": 0.0
+            },
+            "image_height": 640,
+            "image_width": 640,
+            "intrinsics": {
+              "cx": 320.0,
+              "cy": 320.0,
+              "fx": 320.0,
+              "fy": 320.0,
+              "skew": 0.0
+            }
+          }
+        },
+        {
+          "enabled": true,
+          "id": "rear_left",
+          "mount_pose": {
+            "position_m": [
+              -0.24,
+              0.16,
+              0.18
+            ],
+            "yaw_pitch_roll_deg": [
+              0.0,
+              0.0,
+              145.0
+            ]
+          },
+          "panel_slot": 2,
+          "projection": {
+            "calibration_model": "opencv_fisheye",
+            "camera_model": "fisheye",
+            "distortion": {
+              "k1": 0.0,
+              "k2": 0.0,
+              "k3": 0.0,
+              "k4": 0.0
+            },
+            "image_height": 640,
+            "image_width": 640,
+            "intrinsics": {
+              "cx": 320.0,
+              "cy": 320.0,
+              "fx": 320.0,
+              "fy": 320.0,
+              "skew": 0.0
+            }
+          }
+        },
+        {
+          "enabled": true,
+          "id": "rear_right",
+          "mount_pose": {
+            "position_m": [
+              -0.24,
+              -0.16,
+              0.18
+            ],
+            "yaw_pitch_roll_deg": [
+              0.0,
+              0.0,
+              -145.0
+            ]
+          },
+          "panel_slot": 3,
+          "projection": {
+            "calibration_model": "opencv_fisheye",
+            "camera_model": "fisheye",
+            "distortion": {
+              "k1": 0.0,
+              "k2": 0.0,
+              "k3": 0.0,
+              "k4": 0.0
+            },
+            "image_height": 640,
+            "image_width": 640,
+            "intrinsics": {
+              "cx": 320.0,
+              "cy": 320.0,
+              "fx": 320.0,
+              "fy": 320.0,
+              "skew": 0.0
+            }
+          }
+        }
+      ],
+      "enabled": true,
+      "id": "robot_01",
+      "initial_pose": {
+        "position_m": [
+          0.0,
+          0.0,
+          0.15
+        ],
+        "yaw_pitch_roll_deg": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      }
+    }
+  ],
+  "schema_version": 1
+}

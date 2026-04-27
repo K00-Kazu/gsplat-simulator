@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import shutil
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from threading import Event
@@ -18,17 +19,17 @@ from plyfile import PlyData
 
 
 SH_C0 = 0.28209479177387814
-DEFAULT_GAUSSIAN_SPLAT_PLY_PATH = (
-    Path(__file__).resolve().parents[2] / "assets" / "cactus_splat3_25kSteps_2M_splats.ply"
-)
-DEFAULT_RENDER_PREVIEW_OUTPUT_PATH = (
-    Path(__file__).resolve().parents[2] / "runtime" / "cache" / "render_worker_preview.png"
-)
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_GAUSSIAN_SPLAT_PLY_PATH = DEFAULT_REPO_ROOT / "assets" / "sample_point_cloud.ply"
+DEFAULT_RENDER_CONFIG_PATH = DEFAULT_REPO_ROOT / "config" / "render.dev.json"
+DEFAULT_RENDER_PREVIEW_OUTPUT_PATH = DEFAULT_REPO_ROOT / "runtime" / "cache" / "render_worker_preview.png"
 DEFAULT_RENDER_PREVIEW_WIDTH = 1280
 DEFAULT_RENDER_PREVIEW_HEIGHT = 720
 DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH = 900.0
 DEFAULT_RENDER_PREVIEW_CAMERA_DISTANCE_SCALE = 2.5
 DEFAULT_RENDER_PREVIEW_CAMERA_HEIGHT_SCALE = 0.8
+DEFAULT_RENDER_PREVIEW_MAX_PITCH_DEGREES = 80.0
+DEFAULT_RENDER_PREVIEW_MIN_FOCAL_LENGTH = 100.0
 
 
 class RenderLifecycleState(str, Enum):
@@ -66,16 +67,51 @@ class RenderedPreviewFrame:
 
 
 @dataclass(frozen=True)
-class CameraOffsetState:
-    offset_x: float = 0.0
-    offset_y: float = 0.0
-    offset_z: float = 0.0
+class PreviewCameraState:
+    frame_id: int = -1
+    timestamp: str = ""
+    camera_role: str = "preview"
+    eye: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    target: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    up: tuple[float, float, float] = (0.0, 0.0, 1.0)
+    scene_center: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    scene_radius: float = 0.0
+    focal_length_px: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH
+    image_width: int = DEFAULT_RENDER_PREVIEW_WIDTH
+    image_height: int = DEFAULT_RENDER_PREVIEW_HEIGHT
+    world_up_axis: str = "z"
+    gizmo_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class PreviewRenderResult:
+    frame: RenderedPreviewFrame
+    camera_state: PreviewCameraState
+
+
+@dataclass(frozen=True)
+class PreviewRenderConfig:
+    ply_path: Path = DEFAULT_GAUSSIAN_SPLAT_PLY_PATH
+    focal_length_px: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH
+
+
+@dataclass(frozen=True)
+class PreviewCameraControlState:
+    pan_x: float = 0.0
+    pan_y: float = 0.0
+    pan_z: float = 0.0
+    yaw_degrees: float = 0.0
+    pitch_degrees: float = 0.0
+
+
+CameraOffsetState = PreviewCameraControlState
 
 
 StateChangeCallback = Callable[[RenderWorkerState], None]
 RenderInitializationStep = Callable[[], None]
-RenderFrameStep = Callable[[], RenderedPreviewFrame]
-FramePublishCallback = Callable[[RenderedPreviewFrame], None]
+RenderFrameOutput = RenderedPreviewFrame | PreviewRenderResult
+RenderFrameStep = Callable[[], RenderFrameOutput]
+FramePublishCallback = Callable[[RenderFrameOutput], None]
 CameraUpdateCallback = Callable[[], bool]
 
 
@@ -90,6 +126,116 @@ def build_gaussian_splat_path(
     if not resolved_path.is_file():
         raise FileNotFoundError(f"gaussian splatting ply file was not found: {resolved_path}")
     return resolved_path
+
+
+def resolve_repo_path(path_value: str | Path, repo_root: Path = DEFAULT_REPO_ROOT) -> Path:
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return candidate
+    return repo_root / candidate
+
+
+def validate_preview_focal_length(focal_length_px: float) -> float:
+    if not math.isfinite(focal_length_px):
+        raise ValueError("preview focal length must be finite")
+    if focal_length_px < DEFAULT_RENDER_PREVIEW_MIN_FOCAL_LENGTH:
+        raise ValueError(
+            f"preview focal length must be at least {DEFAULT_RENDER_PREVIEW_MIN_FOCAL_LENGTH}"
+        )
+    return float(focal_length_px)
+
+
+def normalize_preview_render_config(
+    config: PreviewRenderConfig,
+    repo_root: Path = DEFAULT_REPO_ROOT,
+) -> PreviewRenderConfig:
+    return PreviewRenderConfig(
+        ply_path=build_gaussian_splat_path(resolve_repo_path(config.ply_path, repo_root)),
+        focal_length_px=validate_preview_focal_length(config.focal_length_px),
+    )
+
+
+def build_preview_render_config_json(
+    config: PreviewRenderConfig,
+    repo_root: Path = DEFAULT_REPO_ROOT,
+    existing_root: dict[str, object] | None = None,
+) -> str:
+    normalized_config = normalize_preview_render_config(config, repo_root)
+    try:
+        serialized_ply_path = normalized_config.ply_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        serialized_ply_path = normalized_config.ply_path.as_posix()
+
+    root: dict[str, object] = {} if existing_root is None else dict(existing_root)
+    preview_root = root.get("preview", {})
+    if not isinstance(preview_root, dict):
+        preview_root = {}
+
+    merged_preview_root = dict(preview_root)
+    merged_preview_root.update(
+        {
+            "ply_path": serialized_ply_path,
+            "focal_length_px": normalized_config.focal_length_px,
+        }
+    )
+    root["preview"] = merged_preview_root
+
+    return json.dumps(
+        root,
+        indent=2,
+    ) + "\n"
+
+
+def load_preview_render_config(
+    config_path: Path = DEFAULT_RENDER_CONFIG_PATH,
+    repo_root: Path = DEFAULT_REPO_ROOT,
+) -> PreviewRenderConfig:
+    resolved_config_path = Path(config_path)
+    if not resolved_config_path.is_file():
+        return normalize_preview_render_config(PreviewRenderConfig(), repo_root)
+
+    raw = json.loads(resolved_config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("render config must be a JSON object")
+
+    preview = raw.get("preview", {})
+    if not isinstance(preview, dict):
+        raise ValueError("render config `preview` must be a JSON object")
+
+    ply_path_value = preview.get("ply_path", DEFAULT_GAUSSIAN_SPLAT_PLY_PATH.as_posix())
+    if not isinstance(ply_path_value, str) or not ply_path_value.strip():
+        raise ValueError("render config `preview.ply_path` must be a non-empty string")
+
+    focal_length_value = preview.get("focal_length_px", DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH)
+    if not isinstance(focal_length_value, (int, float)):
+        raise ValueError("render config `preview.focal_length_px` must be numeric")
+
+    return normalize_preview_render_config(
+        PreviewRenderConfig(
+            ply_path=resolve_repo_path(ply_path_value.strip(), repo_root),
+            focal_length_px=float(focal_length_value),
+        ),
+        repo_root,
+    )
+
+
+def save_preview_render_config(
+    config: PreviewRenderConfig,
+    config_path: Path = DEFAULT_RENDER_CONFIG_PATH,
+    repo_root: Path = DEFAULT_REPO_ROOT,
+) -> None:
+    resolved_config_path = Path(config_path)
+    resolved_config_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_root: dict[str, object] | None = None
+    if resolved_config_path.is_file():
+        raw = json.loads(resolved_config_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("render config must be a JSON object")
+        existing_root = raw
+    resolved_config_path.write_text(
+        build_preview_render_config_json(config, repo_root, existing_root),
+        encoding="utf-8",
+    )
 
 
 def validate_max_vertices(max_vertices: int | None) -> None:
@@ -120,13 +266,158 @@ def build_rendered_preview_frame(rgb8_image: np.ndarray) -> RenderedPreviewFrame
 
 def validate_camera_offset_state(camera_offset: CameraOffsetState) -> CameraOffsetState:
     values = (
-        camera_offset.offset_x,
-        camera_offset.offset_y,
-        camera_offset.offset_z,
+        camera_offset.pan_x,
+        camera_offset.pan_y,
+        camera_offset.pan_z,
+        camera_offset.yaw_degrees,
+        camera_offset.pitch_degrees,
     )
     if not all(math.isfinite(value) for value in values):
-        raise ValueError("camera offsets must be finite numbers")
-    return camera_offset
+        raise ValueError("preview camera controls must be finite numbers")
+
+    return replace(
+        camera_offset,
+        yaw_degrees=((camera_offset.yaw_degrees + 180.0) % 360.0) - 180.0,
+        pitch_degrees=max(
+            -DEFAULT_RENDER_PREVIEW_MAX_PITCH_DEGREES,
+            min(DEFAULT_RENDER_PREVIEW_MAX_PITCH_DEGREES, camera_offset.pitch_degrees),
+        ),
+    )
+
+
+def tensor_to_float3(vector: torch.Tensor) -> tuple[float, float, float]:
+    return tuple(float(value) for value in vector.detach().cpu().tolist())
+
+
+def safe_normalize_tensor(vector: torch.Tensor, fallback: Sequence[float], *, device: str) -> torch.Tensor:
+    if float(torch.linalg.norm(vector).item()) <= 1e-6:
+        return torch.tensor(fallback, dtype=torch.float32, device=device)
+
+    return vector / torch.linalg.norm(vector)
+
+
+def build_axis_angle_rotation_matrix(
+    axis: torch.Tensor,
+    angle_radians: float,
+    *,
+    device: str,
+) -> torch.Tensor:
+    normalized_axis = safe_normalize_tensor(axis, (0.0, 0.0, 1.0), device=device)
+    axis_x, axis_y, axis_z = [float(value) for value in normalized_axis.detach().cpu().tolist()]
+    cos_theta = math.cos(angle_radians)
+    sin_theta = math.sin(angle_radians)
+    one_minus_cos = 1.0 - cos_theta
+
+    return torch.tensor(
+        [
+            [
+                cos_theta + axis_x * axis_x * one_minus_cos,
+                axis_x * axis_y * one_minus_cos - axis_z * sin_theta,
+                axis_x * axis_z * one_minus_cos + axis_y * sin_theta,
+            ],
+            [
+                axis_y * axis_x * one_minus_cos + axis_z * sin_theta,
+                cos_theta + axis_y * axis_y * one_minus_cos,
+                axis_y * axis_z * one_minus_cos - axis_x * sin_theta,
+            ],
+            [
+                axis_z * axis_x * one_minus_cos - axis_y * sin_theta,
+                axis_z * axis_y * one_minus_cos + axis_x * sin_theta,
+                cos_theta + axis_z * axis_z * one_minus_cos,
+            ],
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+
+
+def build_preview_camera_pose(
+    means: torch.Tensor,
+    *,
+    device: str,
+    camera_offset: CameraOffsetState = CameraOffsetState(),
+) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor, torch.Tensor]:
+    resolved_camera_offset = validate_camera_offset_state(camera_offset)
+    center = means.mean(dim=0)
+    distances = torch.linalg.norm(means - center, dim=1)
+    radius = max(float(torch.quantile(distances, 0.95).item()), 1e-3)
+    world_up = torch.tensor([0.0, 0.0, 1.0], dtype=torch.float32, device=device)
+    target = center + torch.tensor(
+        [
+            resolved_camera_offset.pan_x * radius,
+            resolved_camera_offset.pan_y * radius,
+            resolved_camera_offset.pan_z * radius,
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+    default_eye_offset = torch.tensor(
+        [
+            0.0,
+            -DEFAULT_RENDER_PREVIEW_CAMERA_DISTANCE_SCALE * radius,
+            DEFAULT_RENDER_PREVIEW_CAMERA_HEIGHT_SCALE * radius,
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
+
+    yaw_rotation = build_axis_angle_rotation_matrix(
+        world_up,
+        math.radians(resolved_camera_offset.yaw_degrees),
+        device=device,
+    )
+    yawed_eye_offset = yaw_rotation @ default_eye_offset
+    yawed_up = safe_normalize_tensor(yaw_rotation @ world_up, (0.0, 0.0, 1.0), device=device)
+
+    forward = safe_normalize_tensor(-yawed_eye_offset, (0.0, 1.0, 0.0), device=device)
+    right = safe_normalize_tensor(
+        torch.cross(forward, yawed_up, dim=0),
+        (1.0, 0.0, 0.0),
+        device=device,
+    )
+    pitch_rotation = build_axis_angle_rotation_matrix(
+        right,
+        math.radians(-resolved_camera_offset.pitch_degrees),
+        device=device,
+    )
+    rotated_eye_offset = pitch_rotation @ yawed_eye_offset
+    rotated_up = safe_normalize_tensor(
+        pitch_rotation @ yawed_up,
+        (0.0, 0.0, 1.0),
+        device=device,
+    )
+
+    eye = target + rotated_eye_offset
+    return center, target, radius, eye, rotated_up
+
+
+def build_preview_camera_state(
+    means: torch.Tensor,
+    *,
+    width: int = DEFAULT_RENDER_PREVIEW_WIDTH,
+    height: int = DEFAULT_RENDER_PREVIEW_HEIGHT,
+    focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
+    device: str,
+    camera_offset: CameraOffsetState = CameraOffsetState(),
+) -> PreviewCameraState:
+    validate_image_size(width, height)
+    center, target, radius, eye, up = build_preview_camera_pose(
+        means,
+        device=device,
+        camera_offset=camera_offset,
+    )
+    return PreviewCameraState(
+        eye=tensor_to_float3(eye),
+        target=tensor_to_float3(target),
+        up=tensor_to_float3(up),
+        scene_center=tensor_to_float3(center),
+        scene_radius=radius,
+        focal_length_px=float(focal_length),
+        image_width=width,
+        image_height=height,
+        world_up_axis="z",
+        gizmo_enabled=True,
+    )
 
 
 def load_gaussian_splat_model(
@@ -339,34 +630,23 @@ def build_preview_view_matrix(
     means: torch.Tensor,
     *,
     device: str,
+    width: int = DEFAULT_RENDER_PREVIEW_WIDTH,
+    height: int = DEFAULT_RENDER_PREVIEW_HEIGHT,
+    focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     camera_offset: CameraOffsetState = CameraOffsetState(),
 ) -> torch.Tensor:
-    resolved_camera_offset = validate_camera_offset_state(camera_offset)
-    center = means.mean(dim=0)
-    distances = torch.linalg.norm(means - center, dim=1)
-    radius = max(float(torch.quantile(distances, 0.95).item()), 1e-3)
-    default_eye_offset = torch.tensor(
-        [
-            0.0,
-            -DEFAULT_RENDER_PREVIEW_CAMERA_DISTANCE_SCALE * radius,
-            DEFAULT_RENDER_PREVIEW_CAMERA_HEIGHT_SCALE * radius,
-        ],
-        dtype=torch.float32,
+    camera_state = build_preview_camera_state(
+        means,
+        width=width,
+        height=height,
+        focal_length=focal_length,
         device=device,
-    )
-    eye = center + default_eye_offset + torch.tensor(
-        [
-            resolved_camera_offset.offset_x * radius,
-            resolved_camera_offset.offset_y * radius,
-            resolved_camera_offset.offset_z * radius,
-        ],
-        dtype=torch.float32,
-        device=device,
+        camera_offset=camera_offset,
     )
     return build_look_at_view_matrix(
-        eye,
-        center,
-        up=(0.0, 0.0, 1.0),
+        camera_state.eye,
+        camera_state.target,
+        up=camera_state.up,
         device=device,
     )[None]
 
@@ -382,7 +662,7 @@ def save_render_preview_image(
     return resolved_path
 
 
-def render_gaussian_splat_preview_image(
+def render_gaussian_splat_preview_output(
     ply_path: str | Path = DEFAULT_GAUSSIAN_SPLAT_PLY_PATH,
     *,
     device: str | None = None,
@@ -391,7 +671,7 @@ def render_gaussian_splat_preview_image(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
-) -> np.ndarray:
+) -> tuple[np.ndarray, PreviewCameraState]:
     rasterization = require_gsplat_rasterization()
     resolved_device = resolve_render_preview_device(device)
     ensure_ninja_on_path()
@@ -411,11 +691,20 @@ def render_gaussian_splat_preview_image(
         focal_length=focal_length,
         device=resolved_device,
     )
-    view_matrix = build_preview_view_matrix(
+    preview_camera_state = build_preview_camera_state(
         model.means,
+        width=width,
+        height=height,
+        focal_length=focal_length,
         device=resolved_device,
         camera_offset=camera_offset,
     )
+    view_matrix = build_look_at_view_matrix(
+        preview_camera_state.eye,
+        preview_camera_state.target,
+        up=preview_camera_state.up,
+        device=resolved_device,
+    )[None]
 
     try:
         with torch.inference_mode():
@@ -446,7 +735,29 @@ def render_gaussian_splat_preview_image(
         raise
 
     rgb = render_colors[0].clamp(0.0, 1.0).detach().cpu().numpy()
-    return np.clip(rgb * 255.0, 0.0, 255.0).astype(np.uint8)
+    return np.clip(rgb * 255.0, 0.0, 255.0).astype(np.uint8), preview_camera_state
+
+
+def render_gaussian_splat_preview_image(
+    ply_path: str | Path = DEFAULT_GAUSSIAN_SPLAT_PLY_PATH,
+    *,
+    device: str | None = None,
+    width: int = DEFAULT_RENDER_PREVIEW_WIDTH,
+    height: int = DEFAULT_RENDER_PREVIEW_HEIGHT,
+    focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
+    max_vertices: int | None = None,
+    camera_offset: CameraOffsetState = CameraOffsetState(),
+) -> np.ndarray:
+    rgb8_image, _preview_camera_state = render_gaussian_splat_preview_output(
+        ply_path=ply_path,
+        device=device,
+        width=width,
+        height=height,
+        focal_length=focal_length,
+        max_vertices=max_vertices,
+        camera_offset=camera_offset,
+    )
+    return rgb8_image
 
 
 def render_gaussian_splat_preview_frame(
@@ -459,16 +770,39 @@ def render_gaussian_splat_preview_frame(
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
 ) -> RenderedPreviewFrame:
-    return build_rendered_preview_frame(
-        render_gaussian_splat_preview_image(
-            ply_path=ply_path,
-            device=device,
-            width=width,
-            height=height,
-            focal_length=focal_length,
-            max_vertices=max_vertices,
-            camera_offset=camera_offset,
-        )
+    return render_gaussian_splat_preview_result(
+        ply_path=ply_path,
+        device=device,
+        width=width,
+        height=height,
+        focal_length=focal_length,
+        max_vertices=max_vertices,
+        camera_offset=camera_offset,
+    ).frame
+
+
+def render_gaussian_splat_preview_result(
+    ply_path: str | Path = DEFAULT_GAUSSIAN_SPLAT_PLY_PATH,
+    *,
+    device: str | None = None,
+    width: int = DEFAULT_RENDER_PREVIEW_WIDTH,
+    height: int = DEFAULT_RENDER_PREVIEW_HEIGHT,
+    focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
+    max_vertices: int | None = None,
+    camera_offset: CameraOffsetState = CameraOffsetState(),
+) -> PreviewRenderResult:
+    rgb8_image, preview_camera_state = render_gaussian_splat_preview_output(
+        ply_path=ply_path,
+        device=device,
+        width=width,
+        height=height,
+        focal_length=focal_length,
+        max_vertices=max_vertices,
+        camera_offset=camera_offset,
+    )
+    return PreviewRenderResult(
+        frame=build_rendered_preview_frame(rgb8_image),
+        camera_state=preview_camera_state,
     )
 
 
@@ -499,12 +833,18 @@ def render_gaussian_splat_preview(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Load the default Gaussian splat PLY with gsplat and save a PNG preview.",
+        description="Load a configured Gaussian splat PLY with gsplat and save a PNG preview.",
+    )
+    parser.add_argument(
+        "--config-path",
+        type=Path,
+        default=DEFAULT_RENDER_CONFIG_PATH,
+        help="Path to the preview render config JSON file.",
     )
     parser.add_argument(
         "--ply-path",
         type=Path,
-        default=DEFAULT_GAUSSIAN_SPLAT_PLY_PATH,
+        default=None,
         help="Path to the Gaussian splat PLY file.",
     )
     parser.add_argument(
@@ -533,7 +873,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--focal-length",
         type=float,
-        default=DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
+        default=None,
         help="Camera focal length in pixels.",
     )
     parser.add_argument(
@@ -549,17 +889,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     effective_argv = list(sys.argv[1:] if argv is None else argv)
     restart_in_utf8_mode_if_needed(effective_argv)
     args = build_argument_parser().parse_args(effective_argv)
+    preview_render_config = load_preview_render_config(args.config_path)
+    resolved_ply_path = preview_render_config.ply_path if args.ply_path is None else args.ply_path
+    resolved_focal_length = (
+        preview_render_config.focal_length_px if args.focal_length is None else args.focal_length
+    )
     output_path = render_gaussian_splat_preview(
-        ply_path=args.ply_path,
+        ply_path=resolved_ply_path,
         output_path=args.output_path,
         device=args.device,
         width=args.width,
         height=args.height,
-        focal_length=args.focal_length,
+        focal_length=resolved_focal_length,
         max_vertices=args.max_vertices,
     )
     print(
-        f"Rendered {args.ply_path} to {output_path}",
+        f"Rendered {resolved_ply_path} to {output_path}",
         flush=True,
     )
     return 0

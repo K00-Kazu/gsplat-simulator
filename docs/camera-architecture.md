@@ -1,31 +1,36 @@
 # Camera Architecture Implementation Plan
 
 ## Status
-Proposed
+Phase 0-2 implemented. Phase 3-4 planned.
 
 ## Date
 2026-04-15
 
 ## Context
-現在の UI は preview frame を画像として受信し、`offset_x / offset_y / offset_z` を RenderWorker に送る thin client として実装されている。  
+現在の UI は preview frame を画像として受信し、preview camera の `pan_x / pan_y / pan_z / yaw_degrees / pitch_degrees` を RenderWorker に送る thin client として実装されている。  
 この構成は「シーン全体をざっと確認する preview UI」としては成立している一方で、次の課題がある。
 
 - UI が受け取るのは実質 RGB frame と最小メタデータだけで、camera pose や world axis を持っていない
-- `Up / Down / Left / Right` の意味が world-space の `x / z` オフセットであることを UI 上で確認しづらい
+- pan と rotate が分かれていないと、world-space の平行移動とカメラ姿勢変更の違いを UI 上で確認しづらい
 - 将来の robot camera 追加を考えると、preview camera と sensor camera の責務が未分離
 
 本ドキュメントは、preview camera と robot camera を分離した中期アーキテクチャの実装計画を定義する。
 
 ## Requirements
 - 現在実装されているカメラは `preview camera` として扱い、シーン全体を映す
-- 将来は `robot camera` として別パネルに 4 カメラを並列表示したい
+- 各 robot には最大 4 台の `robot camera` を搭載できるようにしたい
+- `robot camera` は別パネルで並列表示したい
+- camera rig は robot 中心基準の相対 pose を config で与えたい
+- robot camera は fisheye 想定で、内部パラメータと distortion を config に保存したい
 - gizmo の表示対象は `preview camera` のみとする
 
 ## Goals
 - preview camera と robot camera の責務を明確に分離する
 - preview camera では UI overlay として gizmo を描画できるようにする
-- robot camera を 4 系統まで拡張できる transport / UI / render contract を先に定義する
+- robot と robot-mounted camera rig を first-class な state として扱う
+- robot camera を `最大 4 台 / robot` まで拡張できる transport / UI / render contract を先に定義する
 - 現在の `simulation/ui/preview/*` topic をできるだけ壊さずに拡張する
+- render config を将来拡張しても preview 設定保存で壊れないようにする
 
 ## Non-Goals
 - UI をフル機能の 3D editor / viewer に置き換えること
@@ -40,7 +45,7 @@ Proposed
 | Role | Purpose | UI 表示 | 操作主体 | Gizmo |
 |---|---|---|---|---|
 | `preview` | シーン全体の確認、開発用の見下ろし視点 | メイン preview panel | UI | 有効 |
-| `robot` | 将来のセンサ視点、運用上の観測カメラ | 2x2 robot panel | SimulationCore / Robot state | 無効 |
+| `robot` | ロボット搭載センサ視点、運用上の観測カメラ | 2x2 robot panel | SimulationCore / Robot state | 無効 |
 
 ### 2. 画像ストリームとカメラ状態は別契約にする
 現在の image-only contract は preview 表示には十分だが、gizmo や camera semantics を UI に渡すには不十分である。  
@@ -60,13 +65,23 @@ Proposed
 - gizmo の色、配置、ON/OFF を UI 側で調整できる
 - 将来 camera debug overlay を足しても RenderWorker の画像生成責務を増やしすぎない
 
+### 4. Robot と camera rig は camera topic ではなく state で表現する
+今回の要件は「4 カメラ固定」ではなく「最大 4 カメラ / robot」である。  
+そのため contract 上の主語は camera 単体ではなく `robot + rig + sensor` とする。
+
+- `RobotState`: world pose
+- `RobotCameraRigSpec`: robot 基準の相対 pose
+- `RobotCameraProjectionSpec`: intrinsics / distortion
+
+RenderWorker は camera world pose を自前で保持するのではなく、Core が解決した state snapshot を受け取る。
+
 ## Current State
 
 ### Preview Camera
-- RenderWorker は `look-at` camera を使ってシーン中心を見る
-- eye position は scene radius を基準にした default offset に `offset_x / offset_y / offset_z` を加算して決まる
-- UI は `offset_x` と `offset_z` のみを送っている
-- UI が受信する preview 情報は RGB frame と frame metadata のみ
+- RenderWorker は preview target を基準にした `look-at` camera を使う
+- pan は preview target を world-space で移動させる
+- rotate は yaw / pitch で eye と up を更新し、preview target の周囲を orbit する
+- UI は preview 情報として RGB frame、frame metadata、preview camera state を受信する
 
 ### Data Flow
 - RenderWorker → Core: `simulation/core/frame_metadata`, `simulation/core/frame_payload`
@@ -76,15 +91,13 @@ Proposed
 ## Target Architecture
 
 ### Camera Streams
-最終的に UI は次の 5 ストリームを扱う。
+最終的に UI は preview stream 1 本と、robot sensor の多重化 stream を扱う。
 
 - `preview/main`
-- `robot/front_left`
-- `robot/front_right`
-- `robot/rear_left`
-- `robot/rear_right`
+- `robot/*`
 
-初期の robot camera ID は固定の 4 つで開始する。将来の可変化は別タスクとする。
+robot panel は 2x2 固定でも、stream 契約は `robot_id` と `camera_id` を metadata に持つ多重化方式にする。  
+これにより、単一 robot の 4 カメラ表示から始めても、将来複数 robot へ伸ばしやすい。
 
 ### UI Layout
 - メイン領域: `preview camera`
@@ -98,17 +111,20 @@ Proposed
 - preview panel の frame と preview camera state を受信する
 - preview panel に gizmo overlay を描画する
 - robot panel 4 面に robot frame を表示する
-- preview camera command だけを送信する
+- selected robot の平行移動 / 回転 command を送信する
+- preview camera command と robot motion command を分離する
 
 #### SimulationCore
-- camera role / camera id の canonical routing を担う
+- camera role / camera id / robot id の canonical routing を担う
+- robot pose と rig から sensor camera の world pose を解決する
 - preview / robot camera の topic namespace を管理する
 - frame stream と camera state stream を UI 向けに中継する
 
 #### RenderWorker
 - preview camera frame を生成する
 - preview camera state を publish する
-- 将来的に robot camera 4 系統の frame を生成する
+- robot camera frame を生成する
+- ロボット簡易表示用の cuboid overlay を描画する
 - preview camera と robot camera の描画設定を内部で分離する
 
 ## Proposed Contracts
@@ -141,7 +157,57 @@ robot panel は gizmo を描かないため、preview camera ほど豊富な sta
 
 ただし将来の debug 用に、robot camera にも state topic を追加できる命名規則にしておく。
 
-### 3. Topic Plan
+robot frame metadata には少なくとも次を含める。
+
+```json
+{
+  "frame_id": 42,
+  "timestamp": "2026-04-15T12:34:56.789Z",
+  "stream_role": "robot",
+  "robot_id": "robot_01",
+  "camera_id": "front_left",
+  "panel_slot": 0,
+  "width": 640,
+  "height": 640,
+  "stride": 1920,
+  "pixel_format": "rgb8"
+}
+```
+
+### 3. Robot Camera Config
+robot camera の保存形式は topic ではなく config で定義する。
+
+```json
+{
+  "id": "front_left",
+  "panel_slot": 0,
+  "mount_pose": {
+    "position_m": [0.24, 0.16, 0.18],
+    "yaw_pitch_roll_deg": [0.0, 0.0, 35.0]
+  },
+  "projection": {
+    "camera_model": "fisheye",
+    "calibration_model": "opencv_fisheye",
+    "image_width": 640,
+    "image_height": 640,
+    "intrinsics": {
+      "fx": 320.0,
+      "fy": 320.0,
+      "cx": 320.0,
+      "cy": 320.0,
+      "skew": 0.0
+    },
+    "distortion": {
+      "k1": 0.0,
+      "k2": 0.0,
+      "k3": 0.0,
+      "k4": 0.0
+    }
+  }
+}
+```
+
+### 4. Topic Plan
 既存 preview topic は維持しつつ、以下を追加する。
 
 #### Existing topics kept
@@ -152,14 +218,17 @@ robot panel は gizmo を描かないため、preview camera ほど豊富な sta
 - `simulation/ui/preview/camera_state`
 
 #### New robot topic namespace
-- `simulation/ui/robot/<camera_id>/frame_metadata`
-- `simulation/ui/robot/<camera_id>/frame_payload`
-- `simulation/ui/robot/<camera_id>/camera_state`  
+- `simulation/ui/robot/frame_metadata`
+- `simulation/ui/robot/frame_payload`
+- `simulation/ui/robot/camera_state`  
   初回実装では optional。予約だけしてもよい。
 
 #### Command topic split
 既存の `simulation/ui/cmd/camera` は preview camera command として扱う。  
-robot camera は UI 操作対象ではないため、初回実装では専用 command topic を追加しない。
+robot camera は UI 直接操作対象ではないため、camera 専用 command topic は増やさない。  
+代わりに robot 操作用の command topic を追加する。
+
+- `simulation/ui/cmd/robot`
 
 ## Planned UI Behavior
 
@@ -192,6 +261,10 @@ robot camera は UI 操作対象ではないため、初回実装では専用 co
 完了条件:
 - 現在の camera controls が preview camera 専用であることが UI から分かる
 
+実装メモ:
+- UI 表記を `Preview camera` 前提に変更済み
+- status bar に render subscriber 状態を移設済み
+
 ### Phase 1: Preview Camera State Contract
 目的: preview camera gizmo を描くための状態契約を導入する。
 
@@ -203,6 +276,10 @@ robot camera は UI 操作対象ではないため、初回実装では専用 co
 完了条件:
 - UI が preview frame と同じ tick の camera state を購読できる
 
+実装メモ:
+- RenderWorker → Core → UI の `preview/camera_state` routing を追加済み
+- `frame_id` と `timestamp` を frame と camera state に共通付与済み
+
 ### Phase 2: Preview Gizmo Overlay
 目的: preview panel 上で gizmo を描けるようにする。
 
@@ -212,19 +289,26 @@ robot camera は UI 操作対象ではないため、初回実装では専用 co
 - gizmo は preview panel にのみ表示する
 
 完了条件:
-- preview camera 操作時に gizmo の向きと camera offset の変化を視覚的に確認できる
+- preview camera 操作時に gizmo の向きと camera state の変化を視覚的に確認できる
 - robot panel には gizmo が出ない
+
+実装メモ:
+- preview panel に gizmo overlay を追加済み
+- preview controls を `Pan` と `Rotate` に分離済み
+- `Pan` は target translation、`Rotate` は yaw / pitch による camera pose 変更として実装済み
 
 ### Phase 3: Robot Camera Stream Expansion
 目的: robot camera 4 面表示のための frame stream を追加する。
 
 作業:
-- RenderWorker に robot camera 4 系統のレンダリング設定を追加する
-- Core に `simulation/ui/robot/<camera_id>/*` routing を追加する
+- Core に `RobotState` / `RobotCameraRigSpec` を追加する
+- RenderWorker に robot camera 複数系統のレンダリング設定を追加する
+- Core に `simulation/ui/robot/*` routing を追加する
 - UI に 2x2 robot panel を追加する
+- UI に selected robot の移動 / 回転 command を追加する
 
 完了条件:
-- 4 つの robot camera frame が独立 panel に表示される
+- 1 robot あたり 4 つまでの camera frame が独立 panel に表示される
 - preview camera と robot camera の表示が混在しない
 
 ### Phase 4: Operational Hardening
@@ -255,6 +339,15 @@ robot camera は UI 操作対象ではないため、初回実装では専用 co
 robot camera は sensor panel の性格が強く、まず重要なのは 4 面を安定表示できることだからである。  
 preview camera と違い、初回要件では gizmo や interactive control を必要としない。
 
+### Distortion backend notes
+fisheye の canonical config は OpenCV 互換の intrinsics / distortion で保持する。  
+ただし描画 backend は OpenCV 固定にせず、`gsplat` の distortion-aware camera model を使えるようにする。
+
+この方針にする理由:
+- calibration や実機合わせでは OpenCV 互換形式が扱いやすい
+- render 時は `gsplat` 側で distortion を持てるなら視野欠損の少ない sensor render を作りやすい
+- coefficient semantics が完全一致しない場合でも config schema を壊さず adapter で吸収できる
+
 ## Risks
 
 ### Frame / State mismatch
@@ -266,12 +359,14 @@ preview と robot を同じ render tick に束ねるか、優先度を分ける�
 
 ### Contract sprawl
 preview と robot の差分を無秩序に増やすと topic と message が散らばる。  
-camera role と camera id を contract 上で先に固定する。
+camera role と camera id を contract 上で先に固定しつつ、topic は多重化で抑える。
 
 ## Open Questions
-- robot camera 4 面の camera ID を何にするか
+- 複数 robot を同時表示する前提で panel slot をどう割り当てるか
 - 4 camera を毎 tick 同期更新するか、個別更新を許可するか
 - robot camera にも後から `camera_state` を流すか
+- robot cuboid を depth-aware に scene へ合成するか、初期は overlay で割り切るか
+- OpenCV fisheye と gsplat fisheye / ftheta のどの組み合わせを正式対応にするか
 - preview camera command を今後 `orbit / pan / zoom` へ広げるか
 
 ## Recommended First Slice

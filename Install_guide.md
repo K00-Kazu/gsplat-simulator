@@ -18,16 +18,53 @@
 | C++ | C++17 |
 | Visual Studio (Windows) | 2022 v17.14.21 |
 | CMake | 3.29以上推奨 |
----
 
+### Ubuntu/WSL2利用時の追加項目
+- Docker Engine 20.10以上
+- Docker Compose 2.0以上
+- X11サーバー（GUIアプリケーション表示のため）
+
+---
 # 2. リポジトリ取得
 ```bash
 git clone <repository-url>
 cd project-root
 ```
 ---
+## 3. Dockerイメージのビルド(Docker利用時のみ)
 
-# 3. Python 環境構築 (RenderWorker)
+プロジェクトルートディレクトリで以下を実行します。
+
+```bash
+cd /path/to/gsplat-simulator
+
+# Dockerイメージのビルド
+docker build -t gsplat-simulator:latest .
+```
+
+**注意**: 初回ビルドは30分〜1時間程度かかる場合があります。Qt6とzenohのビルドに時間を要します。
+
+### ビルド時の環境変数自動設定について
+
+Dockerfileでは以下の環境変数が**自動的に設定**されます：
+
+| 環境変数 | 設定値 | 説明 |
+|---------|--------|------|
+| `QT_ROOT` | `/opt/Qt/6.6.0/gcc_64` | Qt6のルートディレクトリ |
+| `ZENOHC_ROOT` | `/opt/zenoh/zenohc` | zenoh-cのインストールディレクトリ |
+| `ZENOHCXX_ROOT` | `/opt/zenoh/zenohcxx` | zenoh-cppのインストールディレクトリ |
+| `PATH` | Qt6のbinディレクトリを追加 | Qt6コマンドを直接実行可能 |
+| `LD_LIBRARY_PATH` | Qt6とzenohのlibディレクトリ | 動的ライブラリの検索パス |
+
+これらの環境変数は：
+- `ENV`命令でDockerイメージに埋め込まれます（非対話型シェルで有効）
+- `/etc/profile.d/qt-env.sh`に保存され、ログインシェルで自動読み込みされます
+- `/etc/bash.bashrc`に追加され、対話型シェルでも自動読み込みされます
+
+そのため、コンテナ起動後に手動で環境変数を設定する必要はありません。
+
+---
+# 4. Python 環境構築 (RenderWorker)
 ```bash
 cd apps/render
 python -m venv .venv
@@ -79,14 +116,14 @@ python -c "import gsplat; print(gsplat.__version__)"
 `True` および `1.5.3` が返れば正常です。
 ---
 
-# 4. Rust 環境構築
+# 5. Rust 環境構築
 ```bash
 rustup toolchain install 1.94.1
 rustup default 1.94.1
 ```
 ---
 
-# 5. Qt 設定
+# 6. C++(Qt) 設定
 ## QT_ROOT 設定
 - Qt は事前にダウンロードして配置してください。
 - `QT_ROOT` は以下のどちらかを指す必要があります:
@@ -103,7 +140,7 @@ export QT_ROOT=/opt/Qt/6.x.x/gcc_64
 ```
 ---
 
-# 6. Windows: zenoh-c / zenoh-cpp を third_party へ配置
+# 7. Windows: zenoh-c / zenoh-cpp を third_party へ配置
 `apps/ui` の `zenoh` 連携は、リポジトリ内の以下の配置を優先して参照します。
 
 ```text
@@ -114,7 +151,7 @@ third_party/zenoh/windows/zenohcxx
 `zenoh-cpp` は header-only ですが、`zenoh-c` バックエンドが必要です。
 このため、Windows では `zenoh-c` と `zenoh-cpp` をセットで配置してください。
 
-## 6.1 zenoh-c を配置
+## 7.1 zenoh-c を配置
 Visual Studio 2022 の Developer Command Prompt もしくは通常の `cmd` で、リポジトリルートから実行します。
 
 ```bash
@@ -131,7 +168,7 @@ third_party/zenoh/windows/zenohc/lib/zenohc.dll.lib
 third_party/zenoh/windows/zenohc/bin/zenohc.dll
 ```
 
-## 6.2 zenoh-cpp を配置
+## 7.2 zenoh-cpp を配置
 `zenoh-cpp` の configure 時に `zenoh-c` を見つけられるよう、`zenohc_DIR` を渡します。
 
 ```bash
@@ -146,26 +183,30 @@ cmake --build build/vendor/zenoh-cpp-build --config Release --target install
 third_party/zenoh/windows/zenohcxx/include/zenoh.hxx
 ```
 
-## 6.3 動作確認
-`apps/ui` は `ui-debug` preset で `zenoh=ON` のビルドができます。
+## 7.3 動作確認
+`apps/ui` は `ui-debug` / `ui-release` preset で `zenoh=ON` のビルドができます。
 
 Windows の `cmd` では、必要なら configure 時に `QT_ROOT` を付けて実行します。
 
 ```bash
 set QT_ROOT=C:\Qt\6.11.0\msvc2022_64&& cmake --preset ui-debug
 cmake --build --preset ui-debug
+
+set QT_ROOT=C:\Qt\6.11.0\msvc2022_64&& cmake --preset ui-release
+cmake --build --preset ui-release
 ```
 
 生成物:
 
 ```text
 build/cmake/ui-debug/apps/ui/Debug/gsplat_ui.exe
+build/cmake/ui-release/apps/ui/Release/gsplat_ui.exe
 ```
 
-`zenoh-c` / `zenoh-cpp` を再配置した場合は、必要に応じて `build/cmake/ui-debug` を削除してから configure し直してください。
+`zenoh-c` / `zenoh-cpp` を再配置した場合は、必要に応じて `build/cmake/ui-debug` / `build/cmake/ui-release` を削除してから configure し直してください。
 ---
 
-# 7. ビルド
+# 8. ビルド
 トップディレクトリで実行:
 ```bash
 python run.py build
@@ -179,19 +220,35 @@ python run.py build
 UI 起動時には `zenoh` のスモークテストとして、セッションを開いて起動メッセージを publish します。
 ---
 
-# 8. 実行
+# 9. 実行
 
 ## Docker環境
 
+- 起動
+```bash
+# Docker Compose V2を使用（推奨）
+docker compose up -d
+docker compose exec gsplat-simulator bash
+```
+- 実行
 ```bash
 # コンテナ内で実行
 cd /workspace
+# tmuxセッション内で全コンポーネント（UI、SimulationCore、RenderWorker）が起動します。
 python dev_run_app.py start
 ```
 
-tmuxセッション内で全コンポーネント（UI、SimulationCore、RenderWorker）が起動します。
+### docker runコマンドを使用する場合
 
-詳細は[Install_guide_docker.md](Install_guide_docker.md)を参照してください。
+```bash
+docker run --rm -it \
+    --gpus all \
+    --name gsplat-sim \
+    -e DISPLAY=$DISPLAY \
+    -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v $(pwd):/workspace \
+    gsplat-simulator:latest
+```
 
 ## ネイティブ環境（Windows）
 
@@ -212,14 +269,14 @@ cargo run --release
 ```
 ---
 
-# 9. サンプルデータ
+# 10. サンプルデータ
 サンプルモデルは以下に配置されています。
 ```
 assets/sample_models/
 ```
 ---
 
-# 10. UI ビルド
+# 11. UI ビルド
 
 ## CMakeプリセットを使用（Windows/Linux共通、推奨）
 
@@ -229,11 +286,15 @@ CMakePresets.jsonにはWindows向けとLinux向けの設定が含まれていま
 # 利用可能なプリセットを確認
 cmake --list-presets
 
-# Windows: UI Debug（zenoh有効）
+# Windows: UI Debug
 cmake --preset ui-debug
 cmake --build --preset ui-debug
 
-# Linux: UI Release（zenoh有効）
+# Windows: UI Release
+cmake --preset ui-release
+cmake --build --preset ui-release
+
+# Linux: UI Release
 cmake --preset ui-linux-release
 cmake --build --preset ui-linux-release
 

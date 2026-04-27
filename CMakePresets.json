@@ -33,6 +33,14 @@
       }
     },
     {
+      "name": "ui-release",
+      "displayName": "UI Release (Windows)",
+      "inherits": "vs2022-base",
+      "cacheVariables": {
+        "GSPLAT_UI_ENABLE_ZENOH": "ON"
+      }
+    },
+    {
       "name": "linux-base",
       "hidden": true,
       "generator": "Ninja",
@@ -73,6 +81,11 @@
       "name": "ui-debug",
       "configurePreset": "ui-debug",
       "configuration": "Debug"
+    },
+    {
+      "name": "ui-release",
+      "configurePreset": "ui-release",
+      "configuration": "Release"
     },
     {
       "name": "ui-linux-release",
