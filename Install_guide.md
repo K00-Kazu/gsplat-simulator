@@ -114,15 +114,14 @@ python -c "import torch; print(torch.cuda.is_available())"
 python -c "import gsplat; print(gsplat.__version__)"
 ```
 `True` および `1.5.3` が返れば正常です。
----
 
+---
 # 5. Rust 環境構築
 ```bash
 rustup toolchain install 1.94.1
 rustup default 1.94.1
 ```
 ---
-
 # 6. C++(Qt) 設定
 ## QT_ROOT 設定
 - Qt は事前にダウンロードして配置してください。
@@ -139,7 +138,6 @@ QT_ROOT：C:\Qt\6.11.0\msvc2022_64
 export QT_ROOT=/opt/Qt/6.x.x/gcc_64
 ```
 ---
-
 # 7. Windows: zenoh-c / zenoh-cpp を third_party へ配置
 `apps/ui` の `zenoh` 連携は、リポジトリ内の以下の配置を優先して参照します。
 
@@ -204,8 +202,8 @@ build/cmake/ui-release/apps/ui/Release/gsplat_ui.exe
 ```
 
 `zenoh-c` / `zenoh-cpp` を再配置した場合は、必要に応じて `build/cmake/ui-debug` / `build/cmake/ui-release` を削除してから configure し直してください。
----
 
+---
 # 8. ビルド
 トップディレクトリで実行:
 ```bash
@@ -218,8 +216,8 @@ python run.py build
 
 `apps/ui` の `zenoh` 連携を有効化する場合は、事前に `third_party/zenoh/windows` へ `zenoh-c` / `zenoh-cpp` を配置してください。
 UI 起動時には `zenoh` のスモークテストとして、セッションを開いて起動メッセージを publish します。
----
 
+---
 # 9. 実行
 
 ## Docker環境
@@ -267,15 +265,15 @@ python main.py
 # ターミナル3: SimulationCore
 cargo run --release
 ```
----
 
+---
 # 10. サンプルデータ
 サンプルモデルは以下に配置されています。
 ```
 assets/sample_models/
 ```
----
 
+---
 # 11. UI ビルド
 
 ## CMakeプリセットを使用（Windows/Linux共通、推奨）

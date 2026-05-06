@@ -12,11 +12,15 @@ import zenoh
 from render_worker import (
     CameraOffsetState,
     DEFAULT_REPO_ROOT,
+    DEFAULT_RENDER_CONFIG_PATH,
     PreviewCameraState,
     PreviewRenderConfig,
     RenderLifecycleState,
     RenderWorkerState,
+    RobotPoseState,
+    RobotState,
     build_gaussian_splat_path,
+    load_robot_states,
     resolve_repo_path,
     validate_preview_focal_length,
 )
@@ -68,6 +72,7 @@ class TopicKeyExprs:
 @dataclass(frozen=True)
 class PreviewRenderCommand:
     camera_offset: CameraOffsetState = CameraOffsetState()
+    robot_pose: RobotPoseState | None = None
     focal_length_px: float | None = None
     ply_path: Path | None = None
 
@@ -255,6 +260,39 @@ def parse_preview_render_command_payload(
             raise ValueError("ply_path must be a non-empty string")
         ply_path = build_gaussian_splat_path(resolve_repo_path(ply_path_value.strip(), repo_root))
 
+    robot_pose: RobotPoseState | None = None
+    robot_fields = {
+        "robot_x_m",
+        "robot_y_m",
+        "robot_z_m",
+        "robot_yaw_degrees",
+        "robot_pitch_degrees",
+        "robot_roll_degrees",
+    }
+    if any(field_name in raw for field_name in robot_fields):
+        required_robot_fields = ("robot_x_m", "robot_y_m", "robot_z_m", "robot_yaw_degrees")
+        missing_robot_fields = [
+            field_name for field_name in required_robot_fields if field_name not in raw
+        ]
+        if missing_robot_fields:
+            raise ValueError(
+                "robot pose payload is missing required fields: "
+                + ", ".join(missing_robot_fields)
+            )
+
+        robot_pose = RobotPoseState(
+            position_m=(
+                require_float(raw.get("robot_x_m"), "robot_x_m"),
+                require_float(raw.get("robot_y_m"), "robot_y_m"),
+                require_float(raw.get("robot_z_m"), "robot_z_m"),
+            ),
+            yaw_pitch_roll_deg=(
+                require_float(raw.get("robot_yaw_degrees"), "robot_yaw_degrees"),
+                require_float(raw.get("robot_pitch_degrees", 0.0), "robot_pitch_degrees"),
+                require_float(raw.get("robot_roll_degrees", 0.0), "robot_roll_degrees"),
+            ),
+        )
+
     return PreviewRenderCommand(
         camera_offset=CameraOffsetState(
             pan_x=require_float(raw.get("pan_x", raw.get("offset_x", 0.0)), "pan_x"),
@@ -263,6 +301,7 @@ def parse_preview_render_command_payload(
             yaw_degrees=require_float(raw.get("yaw_degrees", 0.0), "yaw_degrees"),
             pitch_degrees=require_float(raw.get("pitch_degrees", 0.0), "pitch_degrees"),
         ),
+        robot_pose=robot_pose,
         focal_length_px=focal_length_px,
         ply_path=ply_path,
     )
@@ -384,6 +423,7 @@ class ZenohWorker:
         preview_settings_subscriber: zenoh.Subscriber | None = None,
         camera_offset: CameraOffsetState = CameraOffsetState(),
         preview_render_config: PreviewRenderConfig = PreviewRenderConfig(),
+        robot_states: tuple[RobotState, ...] = (),
         repo_root: Path = DEFAULT_REPO_ROOT,
     ) -> None:
         self._state = state
@@ -398,6 +438,7 @@ class ZenohWorker:
         self._camera_offset = camera_offset
         self._preview_ply_path = preview_render_config.ply_path
         self._preview_focal_length_px = preview_render_config.focal_length_px
+        self._robot_states = tuple(robot_states)
         self._repo_root = repo_root
         self._camera_update_count = 0
         self._consumed_camera_update_count = 0
@@ -412,6 +453,7 @@ class ZenohWorker:
         frame_metadata_key_expr: str | None = None,
         frame_payload_key_expr: str | None = None,
         config_path: Path = DEFAULT_TRANSPORT_CONFIG_PATH,
+        render_config_path: Path = DEFAULT_RENDER_CONFIG_PATH,
     ) -> "ZenohWorker":
         config = build_config(config_path)
         topic_key_exprs = load_topic_key_exprs(config_path)
@@ -440,6 +482,7 @@ class ZenohWorker:
             frame_metadata_publisher=frame_metadata_publisher,
             frame_payload_publisher=frame_payload_publisher,
             preview_camera_state_publisher=preview_camera_state_publisher,
+            robot_states=load_robot_states(render_config_path),
         )
         worker._camera_request_subscriber = session.declare_subscriber(
             topic_key_exprs.camera_request,
@@ -475,6 +518,11 @@ class ZenohWorker:
         with self._lock:
             return self._preview_focal_length_px
 
+    @property
+    def robot_states(self) -> tuple[RobotState, ...]:
+        with self._lock:
+            return self._robot_states
+
     def publish_current_state(self) -> None:
         with self._lock:
             self._publish_state_unlocked(self._state)
@@ -497,10 +545,28 @@ class ZenohWorker:
 
     def apply_preview_render_command(self, command: PreviewRenderCommand) -> None:
         with self._lock:
-            if command.camera_offset == self._camera_offset:
+            next_camera_offset = command.camera_offset
+            next_robot_states = self._robot_states
+            if command.robot_pose is not None:
+                if next_robot_states:
+                    primary_robot = next_robot_states[0]
+                    next_robot_states = (
+                        RobotState(
+                            id=primary_robot.id,
+                            enabled=primary_robot.enabled,
+                            pose=command.robot_pose,
+                            body=primary_robot.body,
+                        ),
+                        *next_robot_states[1:],
+                    )
+                else:
+                    next_robot_states = (RobotState(pose=command.robot_pose),)
+
+            if next_camera_offset == self._camera_offset and next_robot_states == self._robot_states:
                 return
 
-            self._camera_offset = command.camera_offset
+            self._camera_offset = next_camera_offset
+            self._robot_states = next_robot_states
             self._camera_update_count += 1
 
     def apply_preview_render_settings(self, config: PreviewRenderConfig) -> None:
@@ -542,7 +608,8 @@ class ZenohWorker:
         print(
             f"Received camera request on {sample.key_expr}: "
             f"pan=({command.camera_offset.pan_x:.3f}, {command.camera_offset.pan_y:.3f}, {command.camera_offset.pan_z:.3f}) "
-            f"rotate=({command.camera_offset.yaw_degrees:.3f}, {command.camera_offset.pitch_degrees:.3f}) ",
+            f"rotate=({command.camera_offset.yaw_degrees:.3f}, {command.camera_offset.pitch_degrees:.3f}) "
+            f"robot_pose={command.robot_pose} ",
             flush=True,
         )
 

@@ -3,7 +3,9 @@
 #include "render_worker.h"
 
 #include <QAction>
+#include <QBoxLayout>
 #include <QDockWidget>
+#include <QFrame>
 #include <QImage>
 #include <QLabel>
 #include <QMenuBar>
@@ -20,9 +22,12 @@ private slots:
     void placesCameraControlsInRightDock();
     void rendersSubscriberStatusInBottomStatusBar();
     void labelsPreviewCameraUiClearly();
+    void removesCameraHelpCopyAndCompactsScenePanel();
     void separatesPanAndRotateControls();
+    void exposesRobotMovementAndRotationControls();
     void exposesSceneSelectionFromMenuBar();
     void exposesOptionBCameraActionButtons();
+    void fitButtonResetsPreviewCameraControls();
     void rendersPreviewGizmoWithLatestCameraStateFallback();
 };
 
@@ -35,8 +40,10 @@ void MainWindowTest::placesCameraControlsInRightDock()
     QCOMPARE(window.dockWidgetArea(camera_controls_dock), Qt::RightDockWidgetArea);
 
     auto* camera_pan_label = window.findChild<QLabel*>("cameraPanLabel");
+    auto* preview_controls_group = window.findChild<QFrame*>("previewControlsGroup");
     QVERIFY(camera_pan_label != nullptr);
-    QCOMPARE(camera_pan_label->parentWidget(), camera_controls_dock->widget());
+    QVERIFY(preview_controls_group != nullptr);
+    QVERIFY(preview_controls_group->isAncestorOf(camera_pan_label));
 }
 
 void MainWindowTest::rendersSubscriberStatusInBottomStatusBar()
@@ -61,7 +68,10 @@ void MainWindowTest::labelsPreviewCameraUiClearly()
 
     auto* camera_controls_dock = window.findChild<QDockWidget*>("cameraControlsDock");
     QVERIFY(camera_controls_dock != nullptr);
-    QCOMPARE(camera_controls_dock->windowTitle(), QString("Preview camera controls"));
+    QCOMPARE(camera_controls_dock->windowTitle(), QString("Controls"));
+
+    auto* preview_controls_group = window.findChild<QFrame*>("previewControlsGroup");
+    QVERIFY(preview_controls_group != nullptr);
 
     auto* preview_viewport = window.findChild<QWidget*>("previewViewport");
     QVERIFY(preview_viewport != nullptr);
@@ -69,6 +79,24 @@ void MainWindowTest::labelsPreviewCameraUiClearly()
     auto* camera_pan_label = window.findChild<QLabel*>("cameraPanLabel");
     QVERIFY(camera_pan_label != nullptr);
     QVERIFY(camera_pan_label->text().contains("Preview camera pan"));
+}
+
+void MainWindowTest::removesCameraHelpCopyAndCompactsScenePanel()
+{
+    MainWindow window(nullptr, false);
+
+    const auto labels = window.findChildren<QLabel*>();
+    for (const auto* label : labels)
+    {
+        QVERIFY(!label->text().startsWith("Open scenes from the File menu"));
+    }
+
+    auto* scene_card = window.findChild<QFrame*>("sceneControlCard");
+    auto* current_scene_label = window.findChild<QLabel*>("currentSceneLabel");
+    QVERIFY(scene_card != nullptr);
+    QVERIFY(current_scene_label != nullptr);
+    QVERIFY(scene_card->maximumHeight() <= 88);
+    QVERIFY(!current_scene_label->wordWrap());
 }
 
 void MainWindowTest::separatesPanAndRotateControls()
@@ -81,6 +109,66 @@ void MainWindowTest::separatesPanAndRotateControls()
     QVERIFY(camera_rotation_label != nullptr);
     QVERIFY(camera_pan_label->text().contains("Preview camera pan"));
     QVERIFY(camera_rotation_label->text().contains("Preview camera rotation"));
+
+    auto* pan_up_button = window.findChild<QPushButton*>("panUpButton");
+    auto* rotate_up_button = window.findChild<QPushButton*>("rotateUpButton");
+    QVERIFY(pan_up_button != nullptr);
+    QVERIFY(rotate_up_button != nullptr);
+    QVERIFY(pan_up_button->property("controlRingButton").toBool());
+    QVERIFY(rotate_up_button->property("controlRingButton").toBool());
+    QVERIFY(pan_up_button->maximumWidth() <= 48);
+    QVERIFY(rotate_up_button->maximumWidth() <= 48);
+}
+
+void MainWindowTest::exposesRobotMovementAndRotationControls()
+{
+    MainWindow window(nullptr, false);
+
+    auto* robot_pose_label = window.findChild<QLabel*>("robotPoseLabel");
+    auto* preview_controls_group = window.findChild<QFrame*>("previewControlsGroup");
+    auto* controls_body = window.findChild<QWidget*>("controlsBody");
+    auto* robot_card = window.findChild<QFrame*>("robotControlCard");
+    auto* robot_forward_button = window.findChild<QPushButton*>("robotForwardButton");
+    auto* robot_back_button = window.findChild<QPushButton*>("robotBackButton");
+    auto* robot_left_button = window.findChild<QPushButton*>("robotLeftButton");
+    auto* robot_right_button = window.findChild<QPushButton*>("robotRightButton");
+    auto* robot_rise_button = window.findChild<QPushButton*>("robotRiseButton");
+    auto* robot_lower_button = window.findChild<QPushButton*>("robotLowerButton");
+    auto* robot_rotate_left_button = window.findChild<QPushButton*>("robotRotateLeftButton");
+    auto* robot_rotate_right_button = window.findChild<QPushButton*>("robotRotateRightButton");
+
+    QVERIFY(preview_controls_group != nullptr);
+    QVERIFY(controls_body != nullptr);
+    QVERIFY(robot_card != nullptr);
+    QCOMPARE(preview_controls_group->parentWidget(), controls_body);
+    QCOMPARE(robot_card->parentWidget(), controls_body);
+    auto* controls_layout = qobject_cast<QBoxLayout*>(controls_body->layout());
+    QVERIFY(controls_layout != nullptr);
+    QCOMPARE(controls_layout->direction(), QBoxLayout::LeftToRight);
+    auto* robot_layout_item = controls_layout->itemAt(1);
+    QVERIFY(robot_layout_item != nullptr);
+    QVERIFY((robot_layout_item->alignment() & Qt::AlignTop) != 0);
+    QVERIFY(robot_pose_label != nullptr);
+    QVERIFY(robot_pose_label->text().contains("Robot pose"));
+    QVERIFY(robot_forward_button != nullptr);
+    QVERIFY(robot_back_button != nullptr);
+    QVERIFY(robot_left_button != nullptr);
+    QVERIFY(robot_right_button != nullptr);
+    QVERIFY(robot_rise_button != nullptr);
+    QVERIFY(robot_lower_button != nullptr);
+    QVERIFY(robot_rotate_left_button != nullptr);
+    QVERIFY(robot_rotate_right_button != nullptr);
+    QVERIFY(robot_forward_button->property("controlRingButton").toBool());
+    QVERIFY(robot_back_button->property("controlRingButton").toBool());
+    QVERIFY(robot_left_button->property("controlRingButton").toBool());
+    QVERIFY(robot_right_button->property("controlRingButton").toBool());
+    QVERIFY(robot_rise_button->property("controlRingButton").toBool());
+    QVERIFY(robot_lower_button->property("controlRingButton").toBool());
+    QVERIFY(robot_rotate_left_button->property("controlRingButton").toBool());
+    QVERIFY(robot_rotate_right_button->property("controlRingButton").toBool());
+    QVERIFY(robot_forward_button->maximumWidth() <= 48);
+    QVERIFY(robot_right_button->maximumWidth() <= 48);
+    QVERIFY(robot_rotate_right_button->maximumWidth() <= 48);
 }
 
 void MainWindowTest::exposesSceneSelectionFromMenuBar()
@@ -95,7 +183,7 @@ void MainWindowTest::exposesSceneSelectionFromMenuBar()
     QVERIFY(open_scene_action != nullptr);
     QCOMPARE(open_scene_action->text(), QString("Open Scene..."));
     QVERIFY(current_scene_label != nullptr);
-    QVERIFY(current_scene_label->text().contains("Current preview scene"));
+    QVERIFY(current_scene_label->text().contains("Scene:"));
     QVERIFY(camera_zoom_label != nullptr);
     QVERIFY(camera_zoom_label->text().contains("Preview zoom"));
     QVERIFY(legacy_scene_path_input == nullptr);
@@ -135,9 +223,52 @@ void MainWindowTest::exposesOptionBCameraActionButtons()
     QCOMPARE(fit_button->text(), QString("Fit"));
 }
 
+void MainWindowTest::fitButtonResetsPreviewCameraControls()
+{
+    MainWindow window(nullptr, false);
+
+    auto* fit_button = window.findChild<QPushButton*>("fitSceneButton");
+    auto* zoom_in_button = window.findChild<QPushButton*>("zoomInButton");
+    auto* pan_right_button = window.findChild<QPushButton*>("panRightButton");
+    auto* pan_down_button = window.findChild<QPushButton*>("panDownButton");
+    auto* rotate_left_button = window.findChild<QPushButton*>("rotateLeftButton");
+    auto* rotate_up_button = window.findChild<QPushButton*>("rotateUpButton");
+    auto* camera_zoom_label = window.findChild<QLabel*>("cameraZoomLabel");
+    auto* camera_pan_label = window.findChild<QLabel*>("cameraPanLabel");
+    auto* camera_rotation_label = window.findChild<QLabel*>("cameraRotationLabel");
+
+    QVERIFY(fit_button != nullptr);
+    QVERIFY(zoom_in_button != nullptr);
+    QVERIFY(pan_right_button != nullptr);
+    QVERIFY(pan_down_button != nullptr);
+    QVERIFY(rotate_left_button != nullptr);
+    QVERIFY(rotate_up_button != nullptr);
+    QVERIFY(camera_zoom_label != nullptr);
+    QVERIFY(camera_pan_label != nullptr);
+    QVERIFY(camera_rotation_label != nullptr);
+
+    QTest::mouseClick(zoom_in_button, Qt::LeftButton);
+    QTest::mouseClick(pan_right_button, Qt::LeftButton);
+    QTest::mouseClick(pan_down_button, Qt::LeftButton);
+    QTest::mouseClick(rotate_left_button, Qt::LeftButton);
+    QTest::mouseClick(rotate_up_button, Qt::LeftButton);
+
+    QVERIFY(camera_zoom_label->text().contains("focal=1035.0px"));
+    QVERIFY(camera_pan_label->text().contains("x=0.20 y=0.00 z=-0.20"));
+    QVERIFY(camera_rotation_label->text().contains("yaw=-12.0deg pitch=12.0deg"));
+
+    QTest::mouseClick(fit_button, Qt::LeftButton);
+
+    QVERIFY(!fit_button->property("placeholderAction").toBool());
+    QVERIFY(camera_zoom_label->text().contains("focal=900.0px"));
+    QVERIFY(camera_pan_label->text().contains("x=0.00 y=0.00 z=0.00"));
+    QVERIFY(camera_rotation_label->text().contains("yaw=0.0deg pitch=0.0deg"));
+}
+
 void MainWindowTest::rendersPreviewGizmoWithLatestCameraStateFallback()
 {
     PreviewViewportWidget widget;
+    widget.setMinimumSize(0, 0);
     widget.resize(400, 300);
 
     QImage preview_frame(400, 300, QImage::Format_RGB32);
@@ -166,7 +297,7 @@ void MainWindowTest::rendersPreviewGizmoWithLatestCameraStateFallback()
     widget.render(&painter);
     painter.end();
 
-    const QColor sampled_color = canvas.pixelColor(320, 220);
+    const QColor sampled_color = canvas.pixelColor(widget.width() - 72, widget.height() - 72);
     QVERIFY(sampled_color != QColor(Qt::white));
 }
 

@@ -168,6 +168,22 @@ def test_parse_preview_render_command_payload_reads_scene_and_zoom_updates(
     assert command.ply_path == scene_path
 
 
+def test_parse_preview_render_command_payload_reads_robot_pose_controls() -> None:
+    command = zenoh_worker.parse_preview_render_command_payload(
+        (
+            '{"pan_x":0.5,"pan_y":0.0,"pan_z":-0.25,'
+            '"yaw_degrees":15.0,"pitch_degrees":-10.0,'
+            '"robot_x_m":1.5,"robot_y_m":-0.5,"robot_z_m":0.2,'
+            '"robot_yaw_degrees":45.0}'
+        )
+    )
+
+    assert command.robot_pose == zenoh_worker.RobotPoseState(
+        position_m=(1.5, -0.5, 0.2),
+        yaw_pitch_roll_deg=(45.0, 0.0, 0.0),
+    )
+
+
 def test_parse_preview_render_settings_payload_reads_scene_and_zoom_updates(
     tmp_path: Path,
 ) -> None:
@@ -292,6 +308,42 @@ def test_apply_preview_render_command_updates_only_camera_offset() -> None:
     )
 
     assert worker.camera_offset == zenoh_worker.CameraOffsetState(pan_x=0.25, yaw_degrees=12.0)
+    assert worker.consume_camera_update() is True
+    assert worker.consume_camera_update() is False
+
+
+def test_apply_preview_render_command_updates_primary_robot_pose() -> None:
+    publisher = FakePublisher()
+    session = FakeSession()
+    worker = zenoh_worker.ZenohWorker(
+        state=zenoh_worker.RenderWorkerState(),
+        session=session,
+        publisher=publisher,
+        publish_interval_s=1.0,
+        robot_states=(
+            zenoh_worker.RobotState(
+                id="robot_01",
+                pose=zenoh_worker.RobotPoseState(
+                    position_m=(0.0, 0.0, 0.15),
+                    yaw_pitch_roll_deg=(0.0, 0.0, 0.0),
+                ),
+            ),
+        ),
+    )
+
+    worker.apply_preview_render_command(
+        zenoh_worker.PreviewRenderCommand(
+            robot_pose=zenoh_worker.RobotPoseState(
+                position_m=(1.5, -0.5, 0.2),
+                yaw_pitch_roll_deg=(45.0, 0.0, 0.0),
+            ),
+        )
+    )
+
+    assert worker.robot_states[0].pose == zenoh_worker.RobotPoseState(
+        position_m=(1.5, -0.5, 0.2),
+        yaw_pitch_roll_deg=(45.0, 0.0, 0.0),
+    )
     assert worker.consume_camera_update() is True
     assert worker.consume_camera_update() is False
 

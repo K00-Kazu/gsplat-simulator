@@ -1013,6 +1013,12 @@ fn build_render_camera_request_payload(payload: &[u8]) -> Result<Option<Vec<u8>>
         "pan_z",
         "yaw_degrees",
         "pitch_degrees",
+        "robot_x_m",
+        "robot_y_m",
+        "robot_z_m",
+        "robot_yaw_degrees",
+        "robot_pitch_degrees",
+        "robot_roll_degrees",
         "offset_x",
         "offset_y",
         "offset_z",
@@ -1359,4 +1365,30 @@ fn build_payload_preview(payload: &[u8]) -> String {
 
 fn invalid_data_error(message: String) -> DynError {
     Box::new(io::Error::new(io::ErrorKind::InvalidData, message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_render_camera_request_payload;
+    use serde_json::json;
+
+    #[test]
+    fn build_render_camera_request_payload_preserves_robot_pose_fields() {
+        let payload = build_render_camera_request_payload(
+            br#"{"pan_x":0.5,"robot_x_m":1.5,"robot_y_m":-0.5,"robot_z_m":0.2,"robot_yaw_degrees":45.0}"#,
+        )
+        .expect("payload should parse")
+        .expect("robot payload should route");
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&payload).expect("payload should deserialize"),
+            json!({
+                "pan_x": 0.5,
+                "robot_x_m": 1.5,
+                "robot_y_m": -0.5,
+                "robot_z_m": 0.2,
+                "robot_yaw_degrees": 45.0,
+            }),
+        );
+    }
 }

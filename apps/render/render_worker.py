@@ -30,6 +30,10 @@ DEFAULT_RENDER_PREVIEW_CAMERA_DISTANCE_SCALE = 2.5
 DEFAULT_RENDER_PREVIEW_CAMERA_HEIGHT_SCALE = 0.8
 DEFAULT_RENDER_PREVIEW_MAX_PITCH_DEGREES = 80.0
 DEFAULT_RENDER_PREVIEW_MIN_FOCAL_LENGTH = 100.0
+DEFAULT_ROBOT_BODY_SIZE_M = (0.6, 0.4, 0.3)
+DEFAULT_ROBOT_BODY_COLOR_RGBA = (0.18, 0.64, 0.87, 0.9)
+DEFAULT_ROBOT_POSITION_M = (0.0, 0.0, 0.15)
+DEFAULT_ROBOT_YAW_PITCH_ROLL_DEG = (0.0, 0.0, 0.0)
 
 
 class RenderLifecycleState(str, Enum):
@@ -53,6 +57,7 @@ class GaussianSplatModel:
     scales: torch.Tensor
     opacities: torch.Tensor
     colors: torch.Tensor
+    sh_degree: int | None = None
 
     @property
     def point_count(self) -> int:
@@ -104,6 +109,26 @@ class PreviewCameraControlState:
     pitch_degrees: float = 0.0
 
 
+@dataclass(frozen=True)
+class RobotPoseState:
+    position_m: tuple[float, float, float] = DEFAULT_ROBOT_POSITION_M
+    yaw_pitch_roll_deg: tuple[float, float, float] = DEFAULT_ROBOT_YAW_PITCH_ROLL_DEG
+
+
+@dataclass(frozen=True)
+class RobotBodyState:
+    size_m: tuple[float, float, float] = DEFAULT_ROBOT_BODY_SIZE_M
+    color_rgba: tuple[float, float, float, float] = DEFAULT_ROBOT_BODY_COLOR_RGBA
+
+
+@dataclass(frozen=True)
+class RobotState:
+    id: str = "robot_01"
+    enabled: bool = True
+    pose: RobotPoseState = RobotPoseState()
+    body: RobotBodyState = RobotBodyState()
+
+
 CameraOffsetState = PreviewCameraControlState
 
 
@@ -143,6 +168,145 @@ def validate_preview_focal_length(focal_length_px: float) -> float:
             f"preview focal length must be at least {DEFAULT_RENDER_PREVIEW_MIN_FOCAL_LENGTH}"
         )
     return float(focal_length_px)
+
+
+def require_float_sequence(
+    value: object,
+    path: str,
+    *,
+    length: int,
+) -> tuple[float, ...]:
+    if not isinstance(value, list) or len(value) != length:
+        raise ValueError(f"{path} must be an array with {length} numeric values")
+
+    resolved: list[float] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, (int, float)) or not math.isfinite(float(item)):
+            raise ValueError(f"{path}[{index}] must be finite")
+        resolved.append(float(item))
+
+    return tuple(resolved)
+
+
+def normalize_angle_degrees(angle_degrees: float) -> float:
+    return ((float(angle_degrees) + 180.0) % 360.0) - 180.0
+
+
+def validate_robot_pose_state(robot_pose: RobotPoseState) -> RobotPoseState:
+    position = tuple(float(value) for value in robot_pose.position_m)
+    rotation = tuple(float(value) for value in robot_pose.yaw_pitch_roll_deg)
+    if len(position) != 3 or not all(math.isfinite(value) for value in position):
+        raise ValueError("robot position must contain three finite values")
+    if len(rotation) != 3 or not all(math.isfinite(value) for value in rotation):
+        raise ValueError("robot rotation must contain three finite values")
+
+    return RobotPoseState(
+        position_m=position,
+        yaw_pitch_roll_deg=tuple(normalize_angle_degrees(value) for value in rotation),
+    )
+
+
+def validate_robot_body_state(robot_body: RobotBodyState) -> RobotBodyState:
+    size_m = tuple(float(value) for value in robot_body.size_m)
+    color_rgba = tuple(float(value) for value in robot_body.color_rgba)
+    if len(size_m) != 3 or not all(math.isfinite(value) and value > 0.0 for value in size_m):
+        raise ValueError("robot size must contain three positive finite values")
+    if len(color_rgba) != 4 or not all(math.isfinite(value) for value in color_rgba):
+        raise ValueError("robot color must contain four finite values")
+
+    return RobotBodyState(
+        size_m=size_m,
+        color_rgba=tuple(max(0.0, min(1.0, value)) for value in color_rgba),
+    )
+
+
+def validate_robot_state(robot_state: RobotState) -> RobotState:
+    if not robot_state.id.strip():
+        raise ValueError("robot id must not be empty")
+
+    return RobotState(
+        id=robot_state.id.strip(),
+        enabled=bool(robot_state.enabled),
+        pose=validate_robot_pose_state(robot_state.pose),
+        body=validate_robot_body_state(robot_state.body),
+    )
+
+
+def load_robot_states(
+    config_path: Path = DEFAULT_RENDER_CONFIG_PATH,
+) -> tuple[RobotState, ...]:
+    resolved_config_path = Path(config_path)
+    if not resolved_config_path.is_file():
+        return ()
+
+    raw = json.loads(resolved_config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("render config must be a JSON object")
+
+    raw_robots = raw.get("robots", [])
+    if raw_robots is None:
+        return ()
+    if not isinstance(raw_robots, list):
+        raise ValueError("render config `robots` must be an array")
+
+    robot_states: list[RobotState] = []
+    for index, raw_robot in enumerate(raw_robots):
+        if not isinstance(raw_robot, dict):
+            raise ValueError(f"render config `robots[{index}]` must be an object")
+
+        enabled = bool(raw_robot.get("enabled", True))
+        robot_id = raw_robot.get("id", f"robot_{index + 1:02d}")
+        if not isinstance(robot_id, str) or not robot_id.strip():
+            raise ValueError(f"render config `robots[{index}].id` must be a non-empty string")
+
+        raw_body = raw_robot.get("body", {})
+        if not isinstance(raw_body, dict):
+            raise ValueError(f"render config `robots[{index}].body` must be an object")
+        shape = raw_body.get("shape", "box")
+        if shape != "box":
+            raise ValueError(f"render config `robots[{index}].body.shape` must be `box`")
+
+        raw_initial_pose = raw_robot.get("initial_pose", {})
+        if not isinstance(raw_initial_pose, dict):
+            raise ValueError(f"render config `robots[{index}].initial_pose` must be an object")
+
+        robot_states.append(
+            validate_robot_state(
+                RobotState(
+                    id=robot_id,
+                    enabled=enabled,
+                    pose=RobotPoseState(
+                        position_m=require_float_sequence(
+                            raw_initial_pose.get("position_m", list(DEFAULT_ROBOT_POSITION_M)),
+                            f"robots[{index}].initial_pose.position_m",
+                            length=3,
+                        ),
+                        yaw_pitch_roll_deg=require_float_sequence(
+                            raw_initial_pose.get(
+                                "yaw_pitch_roll_deg",
+                                list(DEFAULT_ROBOT_YAW_PITCH_ROLL_DEG),
+                            ),
+                            f"robots[{index}].initial_pose.yaw_pitch_roll_deg",
+                            length=3,
+                        ),
+                    ),
+                    body=RobotBodyState(
+                        size_m=require_float_sequence(
+                            raw_body.get("size_m", list(DEFAULT_ROBOT_BODY_SIZE_M)),
+                            f"robots[{index}].body.size_m",
+                            length=3,
+                        ),
+                        color_rgba=require_float_sequence(
+                            raw_body.get("color_rgba", list(DEFAULT_ROBOT_BODY_COLOR_RGBA)),
+                            f"robots[{index}].body.color_rgba",
+                            length=4,
+                        ),
+                    ),
+                )
+            )
+        )
+
+    return tuple(robot_states)
 
 
 def normalize_preview_render_config(
@@ -420,6 +584,215 @@ def build_preview_camera_state(
     )
 
 
+def build_robot_rotation_matrix(yaw_pitch_roll_deg: Sequence[float]) -> np.ndarray:
+    yaw_radians, pitch_radians, roll_radians = [
+        math.radians(float(value)) for value in yaw_pitch_roll_deg
+    ]
+    yaw_rotation = np.array(
+        [
+            [math.cos(yaw_radians), -math.sin(yaw_radians), 0.0],
+            [math.sin(yaw_radians), math.cos(yaw_radians), 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    pitch_rotation = np.array(
+        [
+            [math.cos(pitch_radians), 0.0, math.sin(pitch_radians)],
+            [0.0, 1.0, 0.0],
+            [-math.sin(pitch_radians), 0.0, math.cos(pitch_radians)],
+        ],
+        dtype=np.float32,
+    )
+    roll_rotation = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, math.cos(roll_radians), -math.sin(roll_radians)],
+            [0.0, math.sin(roll_radians), math.cos(roll_radians)],
+        ],
+        dtype=np.float32,
+    )
+    return yaw_rotation @ pitch_rotation @ roll_rotation
+
+
+def build_robot_box_vertices(robot_state: RobotState) -> np.ndarray:
+    validated_state = validate_robot_state(robot_state)
+    size_x, size_y, size_z = validated_state.body.size_m
+    half_extents = np.array(
+        [size_x * 0.5, size_y * 0.5, size_z * 0.5],
+        dtype=np.float32,
+    )
+    local_vertices = np.array(
+        [
+            [-half_extents[0], -half_extents[1], -half_extents[2]],
+            [half_extents[0], -half_extents[1], -half_extents[2]],
+            [half_extents[0], half_extents[1], -half_extents[2]],
+            [-half_extents[0], half_extents[1], -half_extents[2]],
+            [-half_extents[0], -half_extents[1], half_extents[2]],
+            [half_extents[0], -half_extents[1], half_extents[2]],
+            [half_extents[0], half_extents[1], half_extents[2]],
+            [-half_extents[0], half_extents[1], half_extents[2]],
+        ],
+        dtype=np.float32,
+    )
+    rotation = build_robot_rotation_matrix(validated_state.pose.yaw_pitch_roll_deg)
+    center = np.array(validated_state.pose.position_m, dtype=np.float32)
+    return (rotation @ local_vertices.T).T + center
+
+
+def project_world_points_to_preview_image(
+    world_points: np.ndarray,
+    *,
+    preview_camera_state: PreviewCameraState,
+) -> tuple[np.ndarray, np.ndarray]:
+    if world_points.ndim != 2 or world_points.shape[1] != 3:
+        raise ValueError("world_points must have shape [count, 3]")
+
+    view_matrix = build_look_at_view_matrix(
+        preview_camera_state.eye,
+        preview_camera_state.target,
+        up=preview_camera_state.up,
+        device="cpu",
+    ).detach().cpu().numpy()
+    homogeneous_world_points = np.concatenate(
+        [
+            world_points.astype(np.float32, copy=False),
+            np.ones((world_points.shape[0], 1), dtype=np.float32),
+        ],
+        axis=1,
+    )
+    camera_points = (view_matrix @ homogeneous_world_points.T).T[:, :3]
+    depth = camera_points[:, 2]
+    pixel_points = np.full((world_points.shape[0], 2), np.nan, dtype=np.float32)
+    visible = depth > 1e-4
+    if np.any(visible):
+        fx = float(preview_camera_state.focal_length_px)
+        fy = float(preview_camera_state.focal_length_px)
+        cx = preview_camera_state.image_width * 0.5
+        cy = preview_camera_state.image_height * 0.5
+        pixel_points[visible, 0] = fx * (camera_points[visible, 0] / depth[visible]) + cx
+        pixel_points[visible, 1] = cy - fy * (camera_points[visible, 1] / depth[visible])
+
+    return pixel_points, depth
+
+
+def overlay_robot_states_on_preview_frame(
+    rgb8_image: np.ndarray,
+    *,
+    preview_camera_state: PreviewCameraState,
+    robot_states: Sequence[RobotState],
+) -> np.ndarray:
+    from PIL import Image, ImageDraw
+
+    validate_image_size(preview_camera_state.image_width, preview_camera_state.image_height)
+    if rgb8_image.ndim != 3 or rgb8_image.shape[2] != 3:
+        raise ValueError("rgb8_image must have shape [height, width, 3]")
+
+    composited_source = np.ascontiguousarray(rgb8_image, dtype=np.uint8)
+    image_height, image_width, _ = composited_source.shape
+    if (
+        image_width != preview_camera_state.image_width
+        or image_height != preview_camera_state.image_height
+    ):
+        raise ValueError("preview image size must match the preview camera state image size")
+
+    base_image = Image.fromarray(composited_source, mode="RGB").convert("RGBA")
+    overlay_image = Image.new("RGBA", base_image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay_image, "RGBA")
+
+    faces = (
+        (0, 1, 2, 3),
+        (4, 5, 6, 7),
+        (0, 1, 5, 4),
+        (1, 2, 6, 5),
+        (2, 3, 7, 6),
+        (3, 0, 4, 7),
+    )
+    edges = (
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 0),
+        (4, 5),
+        (5, 6),
+        (6, 7),
+        (7, 4),
+        (0, 4),
+        (1, 5),
+        (2, 6),
+        (3, 7),
+    )
+
+    for robot_state in robot_states:
+        if not robot_state.enabled:
+            continue
+
+        vertices = build_robot_box_vertices(robot_state)
+        projected_vertices, depth = project_world_points_to_preview_image(
+            vertices,
+            preview_camera_state=preview_camera_state,
+        )
+        if not np.any(np.isfinite(projected_vertices)):
+            continue
+
+        red, green, blue, alpha = validate_robot_body_state(robot_state.body).color_rgba
+        outline_color = (
+            int(round(red * 255.0)),
+            int(round(green * 255.0)),
+            int(round(blue * 255.0)),
+            int(round(alpha * 255.0)),
+        )
+        fill_color = (
+            outline_color[0],
+            outline_color[1],
+            outline_color[2],
+            max(24, int(round(outline_color[3] * 0.25))),
+        )
+
+        sorted_faces = sorted(
+            faces,
+            key=lambda face_indices: float(np.nanmean(depth[list(face_indices)])),
+            reverse=True,
+        )
+        for face in sorted_faces:
+            face_points = [projected_vertices[index] for index in face]
+            if not all(np.isfinite(point).all() for point in face_points):
+                continue
+            draw.polygon(
+                [(float(point[0]), float(point[1])) for point in face_points],
+                fill=fill_color,
+            )
+
+        for start_index, end_index in edges:
+            start_point = projected_vertices[start_index]
+            end_point = projected_vertices[end_index]
+            if not np.isfinite(start_point).all() or not np.isfinite(end_point).all():
+                continue
+            draw.line(
+                [
+                    (float(start_point[0]), float(start_point[1])),
+                    (float(end_point[0]), float(end_point[1])),
+                ],
+                fill=outline_color,
+                width=3,
+            )
+
+        center_point, center_depth = project_world_points_to_preview_image(
+            np.array([robot_state.pose.position_m], dtype=np.float32),
+            preview_camera_state=preview_camera_state,
+        )
+        if np.isfinite(center_point[0]).all() and center_depth[0] > 1e-4:
+            center_x = float(center_point[0, 0])
+            center_y = float(center_point[0, 1])
+            draw.ellipse(
+                (center_x - 4.0, center_y - 4.0, center_x + 4.0, center_y + 4.0),
+                fill=outline_color,
+            )
+
+    composited_image = Image.alpha_composite(base_image, overlay_image).convert("RGB")
+    return np.array(composited_image, dtype=np.uint8)
+
+
 def load_gaussian_splat_model(
     ply_path: str | Path = DEFAULT_GAUSSIAN_SPLAT_PLY_PATH,
     *,
@@ -457,6 +830,30 @@ def load_gaussian_splat_model(
     def column(name: str) -> np.ndarray:
         return np.array(vertex_data[name], dtype=np.float32, copy=True)
 
+    def numbered_fields(prefix: str) -> list[str]:
+        def field_index(name: str) -> int:
+            return int(name.rsplit("_", 1)[1])
+
+        fields = sorted(
+            (name for name in names if name.startswith(prefix)),
+            key=field_index,
+        )
+        expected_indices = list(range(len(fields)))
+        actual_indices = [field_index(name) for name in fields]
+        if actual_indices != expected_indices:
+            raise ValueError(f"gaussian splatting ply `{prefix}*` fields must be contiguous")
+        return fields
+
+    def infer_sh_degree(rest_field_count: int) -> int:
+        if rest_field_count % 3 != 0:
+            raise ValueError("gaussian splatting ply `f_rest_*` field count must be divisible by 3")
+
+        coefficient_count = (rest_field_count // 3) + 1
+        sh_order = math.isqrt(coefficient_count)
+        if sh_order * sh_order != coefficient_count:
+            raise ValueError("gaussian splatting ply `f_rest_*` fields must form complete SH bands")
+        return sh_order - 1
+
     means = np.stack([column("x"), column("y"), column("z")], axis=1)
     scales = np.stack([column("scale_0"), column("scale_1"), column("scale_2")], axis=1)
     quats = np.stack([column("rot_0"), column("rot_1"), column("rot_2"), column("rot_3")], axis=1)
@@ -464,9 +861,21 @@ def load_gaussian_splat_model(
 
     sh_color_fields = {"f_dc_0", "f_dc_1", "f_dc_2"}
     rgb_color_fields = {"red", "green", "blue"}
+    sh_degree: int | None = None
     if sh_color_fields.issubset(names):
         sh_dc = np.stack([column("f_dc_0"), column("f_dc_1"), column("f_dc_2")], axis=1)
-        colors = sh_dc * SH_C0 + 0.5
+        rest_fields = numbered_fields("f_rest_")
+        if rest_fields:
+            sh_degree = infer_sh_degree(len(rest_fields))
+            rest_coefficients = np.stack([column(name) for name in rest_fields], axis=1)
+            rest_coefficients = rest_coefficients.reshape(
+                rest_coefficients.shape[0],
+                3,
+                -1,
+            ).transpose(0, 2, 1)
+            colors = np.concatenate([sh_dc[:, None, :], rest_coefficients], axis=1)
+        else:
+            colors = sh_dc * SH_C0 + 0.5
     elif rgb_color_fields.issubset(names):
         colors = np.stack([column("red"), column("green"), column("blue")], axis=1) / 255.0
     else:
@@ -487,6 +896,7 @@ def load_gaussian_splat_model(
         scales=torch.exp(scales_tensor),
         opacities=torch.sigmoid(opacities_tensor),
         colors=colors_tensor,
+        sh_degree=sh_degree,
     )
 
 
@@ -671,6 +1081,7 @@ def render_gaussian_splat_preview_output(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
+    robot_states: Sequence[RobotState] = (),
 ) -> tuple[np.ndarray, PreviewCameraState]:
     rasterization = require_gsplat_rasterization()
     resolved_device = resolve_render_preview_device(device)
@@ -718,6 +1129,7 @@ def render_gaussian_splat_preview_output(
                 Ks=intrinsics,
                 width=width,
                 height=height,
+                sh_degree=model.sh_degree,
                 render_mode="RGB",
                 packed=False,
             )
@@ -735,7 +1147,14 @@ def render_gaussian_splat_preview_output(
         raise
 
     rgb = render_colors[0].clamp(0.0, 1.0).detach().cpu().numpy()
-    return np.clip(rgb * 255.0, 0.0, 255.0).astype(np.uint8), preview_camera_state
+    rgb8_image = np.clip(rgb * 255.0, 0.0, 255.0).astype(np.uint8)
+    if robot_states:
+        rgb8_image = overlay_robot_states_on_preview_frame(
+            rgb8_image,
+            preview_camera_state=preview_camera_state,
+            robot_states=robot_states,
+        )
+    return rgb8_image, preview_camera_state
 
 
 def render_gaussian_splat_preview_image(
@@ -747,6 +1166,7 @@ def render_gaussian_splat_preview_image(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
+    robot_states: Sequence[RobotState] = (),
 ) -> np.ndarray:
     rgb8_image, _preview_camera_state = render_gaussian_splat_preview_output(
         ply_path=ply_path,
@@ -756,6 +1176,7 @@ def render_gaussian_splat_preview_image(
         focal_length=focal_length,
         max_vertices=max_vertices,
         camera_offset=camera_offset,
+        robot_states=robot_states,
     )
     return rgb8_image
 
@@ -769,6 +1190,7 @@ def render_gaussian_splat_preview_frame(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
+    robot_states: Sequence[RobotState] = (),
 ) -> RenderedPreviewFrame:
     return render_gaussian_splat_preview_result(
         ply_path=ply_path,
@@ -778,6 +1200,7 @@ def render_gaussian_splat_preview_frame(
         focal_length=focal_length,
         max_vertices=max_vertices,
         camera_offset=camera_offset,
+        robot_states=robot_states,
     ).frame
 
 
@@ -790,6 +1213,7 @@ def render_gaussian_splat_preview_result(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
+    robot_states: Sequence[RobotState] = (),
 ) -> PreviewRenderResult:
     rgb8_image, preview_camera_state = render_gaussian_splat_preview_output(
         ply_path=ply_path,
@@ -799,6 +1223,7 @@ def render_gaussian_splat_preview_result(
         focal_length=focal_length,
         max_vertices=max_vertices,
         camera_offset=camera_offset,
+        robot_states=robot_states,
     )
     return PreviewRenderResult(
         frame=build_rendered_preview_frame(rgb8_image),
@@ -816,6 +1241,7 @@ def render_gaussian_splat_preview(
     focal_length: float = DEFAULT_RENDER_PREVIEW_FOCAL_LENGTH,
     max_vertices: int | None = None,
     camera_offset: CameraOffsetState = CameraOffsetState(),
+    robot_states: Sequence[RobotState] = (),
 ) -> Path:
     return save_render_preview_image(
         render_gaussian_splat_preview_image(
@@ -826,6 +1252,7 @@ def render_gaussian_splat_preview(
             focal_length=focal_length,
             max_vertices=max_vertices,
             camera_offset=camera_offset,
+            robot_states=robot_states,
         ),
         output_path,
     )
@@ -894,6 +1321,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved_focal_length = (
         preview_render_config.focal_length_px if args.focal_length is None else args.focal_length
     )
+    robot_states = load_robot_states(args.config_path)
     output_path = render_gaussian_splat_preview(
         ply_path=resolved_ply_path,
         output_path=args.output_path,
@@ -902,6 +1330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         height=args.height,
         focal_length=resolved_focal_length,
         max_vertices=args.max_vertices,
+        robot_states=robot_states,
     )
     print(
         f"Rendered {resolved_ply_path} to {output_path}",

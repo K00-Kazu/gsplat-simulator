@@ -1,9 +1,9 @@
 {
   "preview": {
-    "focal_length_px": 3000.0,
+    "focal_length_px": 900.0,
     "image_height": 720,
     "image_width": 1280,
-    "ply_path": "/workspace/assets/sample_point_cloud.ply"
+    "ply_path": "/workspace/assets/cactus_splat3_25kSteps_2M_splats.ply"
   },
   "robots": [
     {

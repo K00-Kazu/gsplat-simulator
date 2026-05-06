@@ -255,6 +255,64 @@ def test_load_gaussian_splat_model_transforms_sh_coefficients_and_gaussian_param
             dtype=torch.float32,
         ),
     )
+    assert model.sh_degree is None
+
+
+def test_load_gaussian_splat_model_uses_full_sh_coefficients_when_available(
+    tmp_path: Path,
+) -> None:
+    ply_path = tmp_path / "full_sh_coefficients.ply"
+    rest_values = tuple(float(index + 1) / 100.0 for index in range(45))
+    vertices = np.array(
+        [
+            (
+                1.0,
+                2.0,
+                3.0,
+                0.0,
+                np.log(2.0),
+                np.log(4.0),
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.25,
+                -0.5,
+                1.5,
+                *rest_values,
+            ),
+        ],
+        dtype=[
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("scale_0", "f4"),
+            ("scale_1", "f4"),
+            ("scale_2", "f4"),
+            ("rot_0", "f4"),
+            ("rot_1", "f4"),
+            ("rot_2", "f4"),
+            ("rot_3", "f4"),
+            ("opacity", "f4"),
+            ("f_dc_0", "f4"),
+            ("f_dc_1", "f4"),
+            ("f_dc_2", "f4"),
+            *[(f"f_rest_{index}", "f4") for index in range(45)],
+        ],
+    )
+    write_vertex_ply(ply_path, vertices)
+
+    model = render_worker.load_gaussian_splat_model(ply_path)
+
+    expected_rest = np.array(rest_values, dtype=np.float32).reshape(3, 15).T
+    expected_colors = torch.zeros((1, 16, 3), dtype=torch.float32)
+    expected_colors[0, 0] = torch.tensor([0.25, -0.5, 1.5], dtype=torch.float32)
+    expected_colors[0, 1:] = torch.tensor(expected_rest, dtype=torch.float32)
+
+    assert model.sh_degree == 3
+    assert model.colors.shape == (1, 16, 3)
+    torch.testing.assert_close(model.colors, expected_colors)
 
 
 def test_load_gaussian_splat_model_falls_back_to_rgb_colors(tmp_path: Path) -> None:
@@ -303,6 +361,7 @@ def test_load_gaussian_splat_model_falls_back_to_rgb_colors(tmp_path: Path) -> N
         model.colors,
         torch.tensor([[1.0, 128.0 / 255.0, 0.0]], dtype=torch.float32),
     )
+    assert model.sh_degree is None
 
 
 def test_load_gaussian_splat_model_rejects_missing_color_fields(tmp_path: Path) -> None:
@@ -355,7 +414,8 @@ def test_load_gaussian_splat_model_can_limit_vertices_for_large_assets() -> None
     assert model.quats.shape == (8, 4)
     assert model.scales.shape == (8, 3)
     assert model.opacities.shape == (8,)
-    assert model.colors.shape == (8, 3)
+    assert model.colors.shape == (8, 16, 3)
+    assert model.sh_degree == 3
     assert model.means.device.type == "cpu"
 
 
@@ -521,6 +581,56 @@ def test_save_preview_render_config_preserves_unknown_sections(tmp_path: Path) -
     ]
 
 
+def test_load_robot_states_reads_enabled_body_and_initial_pose(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    config_dir = repo_root / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "render.dev.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "preview": {
+                    "ply_path": "assets/scene.ply",
+                    "focal_length_px": 900.0,
+                },
+                "robots": [
+                    {
+                        "id": "robot_01",
+                        "enabled": True,
+                        "body": {
+                            "shape": "box",
+                            "size_m": [0.6, 0.4, 0.3],
+                            "color_rgba": [0.18, 0.64, 0.87, 0.9],
+                        },
+                        "initial_pose": {
+                            "position_m": [0.0, 0.0, 0.15],
+                            "yaw_pitch_roll_deg": [0.0, 0.0, 0.0],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    robot_states = render_worker.load_robot_states(config_path=config_path)
+
+    assert robot_states == (
+        render_worker.RobotState(
+            id="robot_01",
+            enabled=True,
+            pose=render_worker.RobotPoseState(
+                position_m=(0.0, 0.0, 0.15),
+                yaw_pitch_roll_deg=(0.0, 0.0, 0.0),
+            ),
+            body=render_worker.RobotBodyState(
+                size_m=(0.6, 0.4, 0.3),
+                color_rgba=(0.18, 0.64, 0.87, 0.9),
+            ),
+        ),
+    )
+
+
 def test_build_preview_intrinsics_uses_image_center_as_principal_point() -> None:
     intrinsics = render_worker.build_preview_intrinsics(
         width=640,
@@ -657,6 +767,42 @@ def test_build_preview_camera_state_pan_moves_target_with_scene_center_offset() 
     assert panned_state.eye != neutral_state.eye
 
 
+def test_overlay_robot_states_on_preview_frame_draws_visible_robot_wireframe() -> None:
+    preview_frame = np.zeros((180, 240, 3), dtype=np.uint8)
+    preview_camera_state = render_worker.PreviewCameraState(
+        eye=(0.0, -3.0, 1.5),
+        target=(0.0, 0.0, 0.0),
+        up=(0.0, 0.0, 1.0),
+        scene_center=(0.0, 0.0, 0.0),
+        scene_radius=1.0,
+        focal_length_px=180.0,
+        image_width=240,
+        image_height=180,
+    )
+
+    composited_frame = render_worker.overlay_robot_states_on_preview_frame(
+        preview_frame,
+        preview_camera_state=preview_camera_state,
+        robot_states=(
+            render_worker.RobotState(
+                id="robot_01",
+                pose=render_worker.RobotPoseState(
+                    position_m=(0.0, 0.0, 0.15),
+                    yaw_pitch_roll_deg=(30.0, 0.0, 0.0),
+                ),
+                body=render_worker.RobotBodyState(
+                    size_m=(0.6, 0.4, 0.3),
+                    color_rgba=(0.18, 0.64, 0.87, 0.9),
+                ),
+            ),
+        ),
+    )
+
+    assert np.array_equal(preview_frame, np.zeros((180, 240, 3), dtype=np.uint8))
+    assert composited_frame.shape == preview_frame.shape
+    assert np.count_nonzero(composited_frame) > 0
+
+
 def test_render_gaussian_splat_preview_saves_png_with_stubbed_rasterization(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -683,11 +829,22 @@ def test_render_gaussian_splat_preview_saves_png_with_stubbed_rasterization(
         opacities=torch.ones(2, dtype=torch.float32),
         colors=torch.tensor(
             [
-                [1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0],
+                [
+                    [1.0, 0.0, 0.0],
+                    [0.1, 0.2, 0.3],
+                    [0.4, 0.5, 0.6],
+                    [0.7, 0.8, 0.9],
+                ],
+                [
+                    [0.0, 1.0, 0.0],
+                    [0.9, 0.8, 0.7],
+                    [0.6, 0.5, 0.4],
+                    [0.3, 0.2, 0.1],
+                ],
             ],
             dtype=torch.float32,
         ),
+        sh_degree=1,
     )
     captured_args: dict[str, object] = {}
 
@@ -705,6 +862,7 @@ def test_render_gaussian_splat_preview_saves_png_with_stubbed_rasterization(
     def fake_rasterization(**kwargs):
         captured_args["rasterization_width"] = kwargs["width"]
         captured_args["rasterization_height"] = kwargs["height"]
+        captured_args["rasterization_sh_degree"] = kwargs.get("sh_degree")
         height = int(kwargs["height"])
         width = int(kwargs["width"])
         colors = torch.full((1, height, width, 3), 0.25, dtype=torch.float32)
@@ -731,6 +889,7 @@ def test_render_gaussian_splat_preview_saves_png_with_stubbed_rasterization(
         "max_vertices": 128,
         "rasterization_width": 32,
         "rasterization_height": 24,
+        "rasterization_sh_degree": 1,
     }
 
     with Image.open(output_path) as image:

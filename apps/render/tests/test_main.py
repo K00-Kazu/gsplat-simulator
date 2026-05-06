@@ -25,6 +25,7 @@ class FakeZenohWorker:
         self.camera_offset = render_worker.CameraOffsetState()
         self.preview_ply_path = Path("/tmp/default-scene.ply")
         self.preview_focal_length_px = 900.0
+        self.robot_states = (render_worker.RobotState(),)
         self.consume_camera_update_calls = 0
 
     def publish_frame(self, frame: object | None = None) -> None:
@@ -209,10 +210,12 @@ def test_build_worker_threads_forwards_preview_scene_and_zoom_settings(
         ply_path: Path,
         focal_length: float,
         camera_offset: render_worker.CameraOffsetState,
+        robot_states: tuple[render_worker.RobotState, ...],
     ) -> render_worker.PreviewRenderResult:
         captured_args["ply_path"] = ply_path
         captured_args["focal_length"] = focal_length
         captured_args["camera_offset"] = camera_offset
+        captured_args["robot_states"] = robot_states
         return render_worker.PreviewRenderResult(
             frame=render_worker.RenderedPreviewFrame(width=1, height=1, payload=b"\x00\x00\x00"),
             camera_state=render_worker.PreviewCameraState(),
@@ -232,6 +235,7 @@ def test_build_worker_threads_forwards_preview_scene_and_zoom_settings(
         "ply_path": Path("/tmp/scene.ply"),
         "focal_length": 1234.0,
         "camera_offset": render_worker.CameraOffsetState(),
+        "robot_states": (render_worker.RobotState(),),
     }
 
 

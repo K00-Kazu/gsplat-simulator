@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QImage>
+#include <QJsonObject>
 #include <QObject>
 #include <QString>
 #include <QVector3D>
@@ -65,6 +66,7 @@ public:
         float focalLengthPx,
         const QString& plyPath);
     void requestPreviewCameraControl(float panX, float panY, float panZ, float yawDegrees, float pitchDegrees);
+    void requestRobotPoseControl(float positionXM, float positionYM, float positionZM, float yawDegrees);
     void requestCameraOffset(float offsetX, float offsetY, float offsetZ);
 
 signals:
@@ -75,6 +77,7 @@ signals:
 
 private:
     void emitStatus(const QString& summary, const QString& detail, bool isError);
+    void publishCameraCommand(const QJsonObject& payload);
     void storeFrameMetadata(const FrameMetadata& metadata);
     void storePendingFramePayload(const std::vector<uint8_t>& payload);
     void processFramePayload(const std::vector<uint8_t>& payload);

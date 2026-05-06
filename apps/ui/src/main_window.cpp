@@ -32,6 +32,8 @@ constexpr double kCameraDefaultFocalLengthPx = 900.0;
 constexpr double kCameraMinFocalLengthPx = 100.0;
 constexpr double kCameraMaxFocalLengthPx = 3000.0;
 constexpr double kCameraZoomFactor = 1.15;
+constexpr double kRobotTranslationStepMeters = 0.2;
+constexpr double kRobotRotationStepDegrees = 15.0;
 
 QFrame* buildControlCard(QWidget* parent, const QString& objectName)
 {
@@ -39,6 +41,23 @@ QFrame* buildControlCard(QWidget* parent, const QString& objectName)
     card->setObjectName(objectName);
     card->setFrameShape(QFrame::NoFrame);
     return card;
+}
+
+QPushButton* buildRingButton(
+    QWidget* parent,
+    const QString& objectName,
+    const QString& label,
+    const QString& accessibleName,
+    const QString& tooltip)
+{
+    auto* button = new QPushButton(label, parent);
+    button->setObjectName(objectName);
+    button->setAccessibleName(accessibleName);
+    button->setToolTip(tooltip);
+    button->setProperty("directional", true);
+    button->setProperty("controlRingButton", true);
+    button->setFixedSize(42, 42);
+    return button;
 }
 }
 
@@ -80,14 +99,14 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
 
     setCentralWidget(central_widget);
 
-    auto* camera_controls_dock = new QDockWidget("Preview camera controls", this);
+    auto* camera_controls_dock = new QDockWidget("Controls", this);
     camera_controls_dock->setObjectName("cameraControlsDock");
     camera_controls_dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     camera_controls_dock->setFeatures(QDockWidget::NoDockWidgetFeatures);
 
     auto* camera_controls_panel = new QWidget(camera_controls_dock);
     camera_controls_panel->setObjectName("cameraControlsPanel");
-    camera_controls_panel->setMinimumWidth(240);
+    camera_controls_panel->setMinimumWidth(560);
     camera_controls_panel->setStyleSheet(
         "#cameraControlsPanel {"
         "  background: #f6f1e8;"
@@ -95,26 +114,32 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
         "#cameraControlsPanel QFrame[card='true'] {"
         "  background: #fffdfa;"
         "  border: 1px solid #d7cbbb;"
-        "  border-radius: 18px;"
+        "  border-radius: 8px;"
         "}"
         "#cameraControlsPanel QLabel[sectionTitle='true'] {"
         "  color: #202124;"
         "  font-size: 15px;"
         "  font-weight: 700;"
         "}"
+        "#cameraControlsPanel QLabel[groupTitle='true'] {"
+        "  color: #202124;"
+        "  font-size: 13px;"
+        "  font-weight: 700;"
+        "  letter-spacing: 0px;"
+        "}"
         "#cameraControlsPanel QLabel[valueChip='true'] {"
         "  color: #3c4043;"
-        "  font-size: 13px;"
+        "  font-size: 12px;"
         "  line-height: 1.35;"
         "  background: #f4efe7;"
         "  border: 1px solid #dfd3c3;"
-        "  border-radius: 12px;"
-        "  padding: 8px 10px;"
+        "  border-radius: 8px;"
+        "  padding: 6px 8px;"
         "}"
         "#cameraControlsPanel QPushButton {"
-        "  min-height: 34px;"
-        "  padding: 7px 12px;"
-        "  border-radius: 12px;"
+        "  min-height: 32px;"
+        "  padding: 6px 10px;"
+        "  border-radius: 8px;"
         "  border: 1px solid #c9bba9;"
         "  background: #fbf7f1;"
         "  color: #24302b;"
@@ -144,7 +169,22 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
         "#cameraControlsPanel QPushButton[directional='true'] {"
         "  min-width: 56px;"
         "  min-height: 36px;"
-        "  border-radius: 14px;"
+        "  border-radius: 8px;"
+        "}"
+        "#cameraControlsPanel QPushButton[controlRingButton='true'] {"
+        "  min-width: 42px;"
+        "  max-width: 42px;"
+        "  min-height: 42px;"
+        "  max-height: 42px;"
+        "  padding: 0px;"
+        "  border-radius: 21px;"
+        "  background: #fffdfa;"
+        "  font-size: 12px;"
+        "  font-weight: 700;"
+        "}"
+        "#cameraControlsPanel QPushButton[controlRingButton='true']:hover {"
+        "  background: #eef5ef;"
+        "  border-color: #8aa38f;"
         "}"
         "#cameraControlsPanel QPushButton[axisAction='true'] {"
         "  min-width: 80px;"
@@ -154,23 +194,30 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
         "}");
 
     auto* panel_layout = new QVBoxLayout(camera_controls_panel);
-    panel_layout->setContentsMargins(16, 16, 16, 16);
-    panel_layout->setSpacing(14);
+    panel_layout->setContentsMargins(12, 12, 12, 12);
+    panel_layout->setSpacing(0);
 
-    auto* camera_hint_label = new QLabel(
-        "Open scenes from the File menu. Scene and zoom are managed by SimulationCore. Pan translates the target in world X/Z, and Rotate changes preview yaw and pitch around that target.",
-        camera_controls_panel);
-    camera_hint_label->setWordWrap(true);
-    camera_hint_label->setStyleSheet("color: #5f6368; font-size: 13px;");
+    auto* controls_body = new QWidget(camera_controls_panel);
+    controls_body->setObjectName("controlsBody");
+    auto* controls_body_layout = new QHBoxLayout(controls_body);
+    controls_body_layout->setContentsMargins(0, 0, 0, 0);
+    controls_body_layout->setSpacing(12);
 
-    auto* scene_card = buildControlCard(camera_controls_panel, "sceneControlCard");
+    auto* preview_controls_group = buildControlCard(controls_body, "previewControlsGroup");
+    auto* preview_controls_layout = new QVBoxLayout(preview_controls_group);
+    preview_controls_layout->setContentsMargins(0, 0, 0, 0);
+    preview_controls_layout->setSpacing(10);
+    auto* preview_controls_title = new QLabel("Preview camera controls", preview_controls_group);
+    preview_controls_title->setProperty("groupTitle", true);
+    preview_controls_layout->addWidget(preview_controls_title);
+
+    auto* scene_card = buildControlCard(preview_controls_group, "sceneControlCard");
     scene_card->setProperty("card", true);
-    auto* scene_layout = new QVBoxLayout(scene_card);
-    scene_layout->setContentsMargins(14, 14, 14, 14);
-    scene_layout->setSpacing(10);
-
-    auto* scene_header_layout = new QHBoxLayout();
-    scene_header_layout->setSpacing(8);
+    scene_card->setMaximumHeight(78);
+    auto* scene_layout = new QGridLayout(scene_card);
+    scene_layout->setContentsMargins(10, 10, 10, 10);
+    scene_layout->setHorizontalSpacing(8);
+    scene_layout->setVerticalSpacing(0);
 
     auto* scene_section_label = new QLabel("Scene", scene_card);
     scene_section_label->setProperty("sectionTitle", true);
@@ -179,27 +226,31 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     scene_view_button->setObjectName("sceneViewButton");
     scene_view_button->setProperty("secondaryAction", true);
     scene_view_button->setProperty("placeholderAction", true);
+    scene_view_button->setMaximumWidth(92);
     scene_view_button->setToolTip("UI-only placeholder for a future scene view action.");
 
     auto* fit_button = new QPushButton("Fit", scene_card);
     fit_button->setObjectName("fitSceneButton");
     fit_button->setProperty("secondaryAction", true);
-    fit_button->setProperty("placeholderAction", true);
-    fit_button->setToolTip("UI-only placeholder for a future fit action.");
-
-    scene_header_layout->addWidget(scene_section_label);
-    scene_header_layout->addStretch(1);
-    scene_header_layout->addWidget(scene_view_button);
-    scene_header_layout->addWidget(fit_button);
+    fit_button->setMaximumWidth(52);
+    fit_button->setToolTip("Reset preview zoom, pan, and rotation.");
 
     current_scene_label_ = new QLabel(scene_card);
     current_scene_label_->setObjectName("currentSceneLabel");
     current_scene_label_->setProperty("valueChip", true);
-    current_scene_label_->setWordWrap(true);
-    scene_layout->addLayout(scene_header_layout);
-    scene_layout->addWidget(current_scene_label_);
+    current_scene_label_->setWordWrap(false);
+    current_scene_label_->setMinimumWidth(80);
+    current_scene_label_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    auto* zoom_card = buildControlCard(camera_controls_panel, "zoomControlCard");
+    scene_layout->addWidget(scene_section_label, 0, 0);
+    scene_layout->addWidget(current_scene_label_, 0, 1);
+    scene_layout->addWidget(scene_view_button, 0, 2);
+    scene_layout->addWidget(fit_button, 0, 3);
+    scene_layout->setColumnStretch(1, 1);
+
+    connect(fit_button, &QPushButton::clicked, this, &MainWindow::resetPreviewCameraView);
+
+    auto* zoom_card = buildControlCard(preview_controls_group, "zoomControlCard");
     zoom_card->setProperty("card", true);
     auto* zoom_layout = new QVBoxLayout(zoom_card);
     zoom_layout->setContentsMargins(14, 14, 14, 14);
@@ -233,7 +284,7 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     zoom_layout->addWidget(camera_zoom_label_);
     zoom_layout->addLayout(zoom_controls_layout);
 
-    auto* pan_card = buildControlCard(camera_controls_panel, "panControlCard");
+    auto* pan_card = buildControlCard(preview_controls_group, "panControlCard");
     pan_card->setProperty("card", true);
     auto* pan_layout = new QVBoxLayout(pan_card);
     pan_layout->setContentsMargins(14, 14, 14, 14);
@@ -251,24 +302,10 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     pan_controls_layout->setHorizontalSpacing(8);
     pan_controls_layout->setVerticalSpacing(8);
 
-    auto* pan_up_button = new QPushButton("Up", pan_card);
-    pan_up_button->setObjectName("panUpButton");
-    pan_up_button->setProperty("directional", true);
-    pan_up_button->setProperty("axisAction", true);
-    pan_up_button->setToolTip("Move target toward +Z.");
-    auto* pan_left_button = new QPushButton("Left", pan_card);
-    pan_left_button->setObjectName("panLeftButton");
-    pan_left_button->setProperty("directional", true);
-    pan_left_button->setToolTip("Move target toward -X.");
-    auto* pan_right_button = new QPushButton("Right", pan_card);
-    pan_right_button->setObjectName("panRightButton");
-    pan_right_button->setProperty("directional", true);
-    pan_right_button->setToolTip("Move target toward +X.");
-    auto* pan_down_button = new QPushButton("Down", pan_card);
-    pan_down_button->setObjectName("panDownButton");
-    pan_down_button->setProperty("directional", true);
-    pan_down_button->setProperty("axisAction", true);
-    pan_down_button->setToolTip("Move target toward -Z.");
+    auto* pan_up_button = buildRingButton(pan_card, "panUpButton", "^", "Pan up", "Move target toward +Z.");
+    auto* pan_left_button = buildRingButton(pan_card, "panLeftButton", "<", "Pan left", "Move target toward -X.");
+    auto* pan_right_button = buildRingButton(pan_card, "panRightButton", ">", "Pan right", "Move target toward +X.");
+    auto* pan_down_button = buildRingButton(pan_card, "panDownButton", "v", "Pan down", "Move target toward -Z.");
 
     pan_controls_layout->addWidget(pan_up_button, 0, 1);
     pan_controls_layout->addWidget(pan_left_button, 1, 0);
@@ -284,7 +321,7 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     pan_layout->addWidget(camera_pan_label_);
     pan_layout->addLayout(pan_controls_layout);
 
-    auto* rotation_card = buildControlCard(camera_controls_panel, "rotationControlCard");
+    auto* rotation_card = buildControlCard(preview_controls_group, "rotationControlCard");
     rotation_card->setProperty("card", true);
     auto* rotation_layout = new QVBoxLayout(rotation_card);
     rotation_layout->setContentsMargins(14, 14, 14, 14);
@@ -302,20 +339,10 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     rotation_controls_layout->setHorizontalSpacing(8);
     rotation_controls_layout->setVerticalSpacing(8);
 
-    auto* rotate_up_button = new QPushButton("Pitch +", rotation_card);
-    rotate_up_button->setObjectName("rotateUpButton");
-    rotate_up_button->setProperty("directional", true);
-    rotate_up_button->setProperty("axisAction", true);
-    auto* rotate_left_button = new QPushButton("Yaw -", rotation_card);
-    rotate_left_button->setObjectName("rotateLeftButton");
-    rotate_left_button->setProperty("directional", true);
-    auto* rotate_right_button = new QPushButton("Yaw +", rotation_card);
-    rotate_right_button->setObjectName("rotateRightButton");
-    rotate_right_button->setProperty("directional", true);
-    auto* rotate_down_button = new QPushButton("Pitch -", rotation_card);
-    rotate_down_button->setObjectName("rotateDownButton");
-    rotate_down_button->setProperty("directional", true);
-    rotate_down_button->setProperty("axisAction", true);
+    auto* rotate_up_button = buildRingButton(rotation_card, "rotateUpButton", "P+", "Pitch up", "Increase preview pitch.");
+    auto* rotate_left_button = buildRingButton(rotation_card, "rotateLeftButton", "Y-", "Yaw left", "Decrease preview yaw.");
+    auto* rotate_right_button = buildRingButton(rotation_card, "rotateRightButton", "Y+", "Yaw right", "Increase preview yaw.");
+    auto* rotate_down_button = buildRingButton(rotation_card, "rotateDownButton", "P-", "Pitch down", "Decrease preview pitch.");
 
     rotation_controls_layout->addWidget(rotate_up_button, 0, 1);
     rotation_controls_layout->addWidget(rotate_left_button, 1, 0);
@@ -331,12 +358,149 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     rotation_layout->addWidget(camera_rotation_label_);
     rotation_layout->addLayout(rotation_controls_layout);
 
-    panel_layout->addWidget(camera_hint_label);
-    panel_layout->addWidget(scene_card);
-    panel_layout->addWidget(zoom_card);
-    panel_layout->addWidget(pan_card);
-    panel_layout->addWidget(rotation_card);
-    panel_layout->addStretch(1);
+    auto* robot_card = buildControlCard(controls_body, "robotControlCard");
+    robot_card->setProperty("card", true);
+    robot_card->setMinimumWidth(210);
+    robot_card->setMaximumWidth(260);
+    robot_card->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
+    auto* robot_layout = new QVBoxLayout(robot_card);
+    robot_layout->setContentsMargins(12, 12, 12, 12);
+    robot_layout->setSpacing(8);
+
+    auto* robot_section_label = new QLabel("Robot", robot_card);
+    robot_section_label->setProperty("sectionTitle", true);
+
+    robot_pose_label_ = new QLabel(robot_card);
+    robot_pose_label_->setObjectName("robotPoseLabel");
+    robot_pose_label_->setProperty("valueChip", true);
+    robot_pose_label_->setWordWrap(true);
+
+    auto* robot_translation_layout = new QGridLayout();
+    robot_translation_layout->setHorizontalSpacing(8);
+    robot_translation_layout->setVerticalSpacing(8);
+
+    auto* robot_forward_button = buildRingButton(
+        robot_card,
+        "robotForwardButton",
+        "^",
+        "Move robot forward",
+        "Move robot toward +Y.");
+    auto* robot_back_button = buildRingButton(
+        robot_card,
+        "robotBackButton",
+        "v",
+        "Move robot back",
+        "Move robot toward -Y.");
+    auto* robot_left_button = buildRingButton(
+        robot_card,
+        "robotLeftButton",
+        "<",
+        "Move robot left",
+        "Move robot toward -X.");
+    auto* robot_right_button = buildRingButton(
+        robot_card,
+        "robotRightButton",
+        ">",
+        "Move robot right",
+        "Move robot toward +X.");
+    auto* robot_rise_button = buildRingButton(
+        robot_card,
+        "robotRiseButton",
+        "Z+",
+        "Raise robot",
+        "Move robot toward +Z.");
+    auto* robot_lower_button = buildRingButton(
+        robot_card,
+        "robotLowerButton",
+        "Z-",
+        "Lower robot",
+        "Move robot toward -Z.");
+
+    robot_translation_layout->addWidget(robot_forward_button, 0, 1, Qt::AlignCenter);
+    robot_translation_layout->addWidget(robot_left_button, 1, 0, Qt::AlignCenter);
+    robot_translation_layout->addWidget(robot_rise_button, 1, 1, Qt::AlignCenter);
+    robot_translation_layout->addWidget(robot_right_button, 1, 2, Qt::AlignCenter);
+    robot_translation_layout->addWidget(robot_back_button, 2, 1, Qt::AlignCenter);
+    robot_translation_layout->addWidget(robot_lower_button, 3, 1, Qt::AlignCenter);
+    robot_translation_layout->setColumnStretch(0, 1);
+    robot_translation_layout->setColumnStretch(1, 1);
+    robot_translation_layout->setColumnStretch(2, 1);
+
+    connect(
+        robot_forward_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(0.0, kRobotTranslationStepMeters, 0.0); });
+    connect(
+        robot_back_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(0.0, -kRobotTranslationStepMeters, 0.0); });
+    connect(
+        robot_left_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(-kRobotTranslationStepMeters, 0.0, 0.0); });
+    connect(
+        robot_right_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(kRobotTranslationStepMeters, 0.0, 0.0); });
+    connect(
+        robot_rise_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(0.0, 0.0, kRobotTranslationStepMeters); });
+    connect(
+        robot_lower_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotTranslation(0.0, 0.0, -kRobotTranslationStepMeters); });
+
+    auto* robot_rotation_layout = new QHBoxLayout();
+    robot_rotation_layout->setSpacing(8);
+    auto* robot_rotate_left_button = buildRingButton(
+        robot_card,
+        "robotRotateLeftButton",
+        "Y-",
+        "Rotate robot left",
+        "Decrease robot yaw.");
+    auto* robot_rotate_right_button = buildRingButton(
+        robot_card,
+        "robotRotateRightButton",
+        "Y+",
+        "Rotate robot right",
+        "Increase robot yaw.");
+    robot_rotation_layout->addStretch(1);
+    robot_rotation_layout->addWidget(robot_rotate_left_button);
+    robot_rotation_layout->addWidget(robot_rotate_right_button);
+    robot_rotation_layout->addStretch(1);
+
+    connect(
+        robot_rotate_left_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotYaw(-kRobotRotationStepDegrees); });
+    connect(
+        robot_rotate_right_button,
+        &QPushButton::clicked,
+        this,
+        [this]() { adjustRobotYaw(kRobotRotationStepDegrees); });
+
+    robot_layout->addWidget(robot_section_label);
+    robot_layout->addWidget(robot_pose_label_);
+    robot_layout->addLayout(robot_translation_layout);
+    robot_layout->addLayout(robot_rotation_layout);
+
+    preview_controls_layout->addWidget(scene_card);
+    preview_controls_layout->addWidget(zoom_card);
+    preview_controls_layout->addWidget(pan_card);
+    preview_controls_layout->addWidget(rotation_card);
+    preview_controls_layout->addStretch(1);
+
+    controls_body_layout->addWidget(preview_controls_group, 1);
+    controls_body_layout->addWidget(robot_card, 0, Qt::AlignTop);
+    panel_layout->addWidget(controls_body);
 
     camera_controls_dock->setWidget(camera_controls_panel);
     addDockWidget(Qt::RightDockWidgetArea, camera_controls_dock);
@@ -371,6 +535,7 @@ MainWindow::MainWindow(QWidget* parent, bool autoSubscribe)
     render_detail_text_ = QStringLiteral("Waiting for frame metadata and payload subscriptions to come online.");
     refreshRenderDetailLabel();
     refreshCameraControlLabels();
+    refreshRobotControlLabels();
 }
 
 void MainWindow::applyRenderStatus(const QString& summary, const QString& detail, bool isError)
@@ -409,11 +574,7 @@ void MainWindow::applyPreviewCameraState(const PreviewCameraState& state)
 void MainWindow::applyPreviewSettingsState(const PreviewSettingsState& state)
 {
     scene_ply_path_ = state.plyPath;
-    if (current_scene_label_ != nullptr)
-    {
-        current_scene_label_->setText(
-            QStringLiteral("Current preview scene:\n%1").arg(scene_ply_path_));
-    }
+    refreshSceneLabel();
 
     if (state.focalLengthPx >= kCameraMinFocalLengthPx)
     {
@@ -470,6 +631,45 @@ void MainWindow::adjustCameraOrbit(double deltaYawDegrees, double deltaPitchDegr
     sendPreviewCameraControl();
 }
 
+void MainWindow::resetPreviewCameraValues()
+{
+    camera_focal_length_px_ = kCameraDefaultFocalLengthPx;
+    camera_pan_x_ = 0.0;
+    camera_pan_z_ = 0.0;
+    camera_yaw_degrees_ = 0.0;
+    camera_pitch_degrees_ = 0.0;
+}
+
+void MainWindow::resetPreviewCameraView()
+{
+    resetPreviewCameraValues();
+    refreshCameraControlLabels();
+    if (render_worker_ != nullptr)
+    {
+        render_worker_->requestPreviewSettingsUpdate(
+            static_cast<float>(camera_focal_length_px_),
+            QString());
+    }
+    sendPreviewCameraControl();
+}
+
+void MainWindow::adjustRobotTranslation(double deltaX, double deltaY, double deltaZ)
+{
+    robot_position_x_m_ += deltaX;
+    robot_position_y_m_ += deltaY;
+    robot_position_z_m_ = std::max(0.0, robot_position_z_m_ + deltaZ);
+    refreshRobotControlLabels();
+    sendRobotControl();
+}
+
+void MainWindow::adjustRobotYaw(double deltaYawDegrees)
+{
+    robot_yaw_degrees_ += deltaYawDegrees;
+    robot_yaw_degrees_ = std::remainder(robot_yaw_degrees_, 360.0);
+    refreshRobotControlLabels();
+    sendRobotControl();
+}
+
 void MainWindow::browsePreviewScenePath()
 {
     const QString selectedPath = QFileDialog::getOpenFileName(
@@ -483,17 +683,15 @@ void MainWindow::browsePreviewScenePath()
     }
 
     scene_ply_path_ = selectedPath;
-    if (current_scene_label_ != nullptr)
-    {
-        current_scene_label_->setText(
-            QStringLiteral("Current preview scene:\n%1").arg(scene_ply_path_));
-    }
+    resetPreviewCameraValues();
+    refreshCameraControlLabels();
     if (render_worker_ != nullptr)
     {
         render_worker_->requestPreviewSettingsUpdate(
-            0.0f,
+            static_cast<float>(camera_focal_length_px_),
             scene_ply_path_);
     }
+    sendPreviewCameraControl();
 }
 
 void MainWindow::sendPreviewCameraControl()
@@ -509,13 +707,35 @@ void MainWindow::sendPreviewCameraControl()
     }
 }
 
+void MainWindow::sendRobotControl()
+{
+    if (render_worker_ != nullptr)
+    {
+        render_worker_->requestRobotPoseControl(
+            static_cast<float>(robot_position_x_m_),
+            static_cast<float>(robot_position_y_m_),
+            static_cast<float>(robot_position_z_m_),
+            static_cast<float>(robot_yaw_degrees_));
+    }
+}
+
+void MainWindow::refreshSceneLabel()
+{
+    if (current_scene_label_ == nullptr)
+    {
+        return;
+    }
+
+    const int available_width = std::max(current_scene_label_->width() - 24, 120);
+    const QFontMetrics metrics(current_scene_label_->font());
+    const QString elided_path = metrics.elidedText(scene_ply_path_, Qt::ElideMiddle, available_width);
+    current_scene_label_->setText(QStringLiteral("Scene: %1").arg(elided_path));
+    current_scene_label_->setToolTip(scene_ply_path_);
+}
+
 void MainWindow::refreshCameraControlLabels()
 {
-    if (current_scene_label_ != nullptr)
-    {
-        current_scene_label_->setText(
-            QStringLiteral("Current preview scene:\n%1").arg(scene_ply_path_));
-    }
+    refreshSceneLabel();
 
     if (camera_zoom_label_ != nullptr)
     {
@@ -542,8 +762,22 @@ void MainWindow::refreshCameraControlLabels()
     }
 }
 
+void MainWindow::refreshRobotControlLabels()
+{
+    if (robot_pose_label_ != nullptr)
+    {
+        robot_pose_label_->setText(
+            QStringLiteral("Robot pose: x=%1m y=%2m z=%3m yaw=%4deg")
+                .arg(robot_position_x_m_, 0, 'f', 2)
+                .arg(robot_position_y_m_, 0, 'f', 2)
+                .arg(robot_position_z_m_, 0, 'f', 2)
+                .arg(robot_yaw_degrees_, 0, 'f', 1));
+    }
+}
+
 void MainWindow::resizeEvent(QResizeEvent* event)
 {
     QMainWindow::resizeEvent(event);
     refreshRenderDetailLabel();
+    refreshSceneLabel();
 }

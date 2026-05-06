@@ -740,27 +740,7 @@ void RenderWorker::requestPreviewRenderCommand(
         payload.insert(QStringLiteral("ply_path"), plyPath);
     }
 
-    try
-    {
-        const QByteArray payloadText = QJsonDocument(payload).toJson(QJsonDocument::Compact);
-        impl_->session->put(
-            impl_->cameraCommandTopic.toStdString(),
-            payloadText.toStdString());
-    }
-    catch (const std::exception& exception)
-    {
-        emitStatus(
-            QStringLiteral("camera command: send failed"),
-            QStringLiteral("Exception: %1").arg(QString::fromUtf8(exception.what())),
-            true);
-    }
-    catch (...)
-    {
-        emitStatus(
-            QStringLiteral("camera command: send failed"),
-            QStringLiteral("An unknown exception was raised while sending the camera command."),
-            true);
-    }
+    publishCameraCommand(payload);
 #else
     Q_UNUSED(panX);
     Q_UNUSED(panY);
@@ -776,7 +756,7 @@ void RenderWorker::requestPreviewRenderCommand(
 #endif
 }
 
-void RenderWorker::requestPreviewSettingsUpdate(float focalLengthPx, const QString& plyPath)
+void RenderWorker::publishCameraCommand(const QJsonObject& payload)
 {
 #if GSPLAT_UI_WITH_ZENOH
     if (!impl_->session.has_value() || impl_->cameraCommandTopic.isEmpty())
@@ -786,16 +766,6 @@ void RenderWorker::requestPreviewSettingsUpdate(float focalLengthPx, const QStri
             QStringLiteral("The camera command publisher is not ready yet."),
             true);
         return;
-    }
-
-    QJsonObject payload;
-    if (focalLengthPx > 0.0f)
-    {
-        payload.insert(QStringLiteral("focal_length_px"), focalLengthPx);
-    }
-    if (!plyPath.trimmed().isEmpty())
-    {
-        payload.insert(QStringLiteral("ply_path"), plyPath);
     }
 
     try
@@ -820,12 +790,30 @@ void RenderWorker::requestPreviewSettingsUpdate(float focalLengthPx, const QStri
             true);
     }
 #else
-    Q_UNUSED(focalLengthPx);
-    Q_UNUSED(plyPath);
+    Q_UNUSED(payload);
     emitStatus(
         QStringLiteral("camera command: disabled"),
         QStringLiteral("Configure CMake with GSPLAT_UI_ENABLE_ZENOH=ON to enable camera commands."),
         true);
+#endif
+}
+
+void RenderWorker::requestPreviewSettingsUpdate(float focalLengthPx, const QString& plyPath)
+{
+    QJsonObject payload;
+    if (focalLengthPx > 0.0f)
+    {
+        payload.insert(QStringLiteral("focal_length_px"), focalLengthPx);
+    }
+    if (!plyPath.trimmed().isEmpty())
+    {
+        payload.insert(QStringLiteral("ply_path"), plyPath);
+    }
+
+    publishCameraCommand(payload);
+#if !GSPLAT_UI_WITH_ZENOH
+    Q_UNUSED(focalLengthPx);
+    Q_UNUSED(plyPath);
 #endif
 }
 
@@ -849,6 +837,21 @@ void RenderWorker::requestPreviewCameraControl(
 void RenderWorker::requestCameraOffset(float offsetX, float offsetY, float offsetZ)
 {
     requestPreviewCameraControl(offsetX, offsetY, offsetZ, 0.0f, 0.0f);
+}
+
+void RenderWorker::requestRobotPoseControl(
+    float positionXM,
+    float positionYM,
+    float positionZM,
+    float yawDegrees)
+{
+    QJsonObject payload{
+        {QStringLiteral("robot_x_m"), positionXM},
+        {QStringLiteral("robot_y_m"), positionYM},
+        {QStringLiteral("robot_z_m"), positionZM},
+        {QStringLiteral("robot_yaw_degrees"), yawDegrees},
+    };
+    publishCameraCommand(payload);
 }
 
 void RenderWorker::emitStatus(const QString& summary, const QString& detail, bool isError)

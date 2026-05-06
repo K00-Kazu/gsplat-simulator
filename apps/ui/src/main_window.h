@@ -22,14 +22,21 @@ private:
     void adjustCameraZoom(double scaleFactor);
     void adjustCameraPan(double deltaX, double deltaZ);
     void adjustCameraOrbit(double deltaYawDegrees, double deltaPitchDegrees);
+    void resetPreviewCameraValues();
+    void resetPreviewCameraView();
+    void adjustRobotTranslation(double deltaX, double deltaY, double deltaZ);
+    void adjustRobotYaw(double deltaYawDegrees);
     void browsePreviewScenePath();
     void applyRenderStatus(const QString& summary, const QString& detail, bool isError);
     void applyPreviewFrame(const QImage& image, qint64 frameId);
     void applyPreviewCameraState(const PreviewCameraState& state);
     void applyPreviewSettingsState(const PreviewSettingsState& state);
     void refreshRenderDetailLabel();
+    void refreshSceneLabel();
     void refreshCameraControlLabels();
+    void refreshRobotControlLabels();
     void sendPreviewCameraControl();
+    void sendRobotControl();
 
     void resizeEvent(QResizeEvent* event) override;
 
@@ -39,6 +46,7 @@ private:
     QLabel* camera_zoom_label_ = nullptr;
     QLabel* camera_pan_label_ = nullptr;
     QLabel* camera_rotation_label_ = nullptr;
+    QLabel* robot_pose_label_ = nullptr;
     QLabel* current_scene_label_ = nullptr;
     PreviewViewportWidget* preview_viewport_ = nullptr;
     QString render_detail_text_;
@@ -48,4 +56,8 @@ private:
     double camera_pan_z_ = 0.0;
     double camera_yaw_degrees_ = 0.0;
     double camera_pitch_degrees_ = 0.0;
+    double robot_position_x_m_ = 0.0;
+    double robot_position_y_m_ = 0.0;
+    double robot_position_z_m_ = 0.15;
+    double robot_yaw_degrees_ = 0.0;
 };

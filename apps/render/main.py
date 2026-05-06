@@ -18,6 +18,7 @@ from render_worker import (
     PreviewRenderResult,
     RenderWorkerState,
     RenderedPreviewFrame,
+    RobotState,
     render_gaussian_splat_preview_result,
     run_render_loop,
 )
@@ -52,6 +53,10 @@ class CommandWorker(Protocol):
     @property
     def preview_focal_length_px(self) -> float:
         """Return the active preview focal length in pixels."""
+
+    @property
+    def robot_states(self) -> tuple[RobotState, ...]:
+        """Return the configured robots with their latest poses."""
 
     def consume_camera_update(self) -> bool:
         """Return whether a new camera update should trigger re-rendering."""
@@ -157,6 +162,7 @@ def build_worker_threads(
                 ply_path=worker.preview_ply_path,
                 focal_length=worker.preview_focal_length_px,
                 camera_offset=worker.camera_offset,
+                robot_states=worker.robot_states,
             ),
             lambda preview_render: preview_publication_sequencer.publish(worker, preview_render),
             worker.consume_camera_update,
